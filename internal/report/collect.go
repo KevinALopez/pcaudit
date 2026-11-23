@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
+	"github.com/KevinALopez/pcaudit/internal/dupes"
 	"github.com/KevinALopez/pcaudit/internal/scan"
 )
 
@@ -35,7 +37,17 @@ type Collector struct {
 	CatAgg         [classify.NumCategories]scan.Agg
 	CloudOnlyBytes int64
 	CSVPath        string
+
+	// FindDupes turns on collecting duplicate candidates: files of at least
+	// DupeMinSize that you'd back up or review, stored on this disk.
+	FindDupes  bool
+	Candidates []dupes.Candidate
 }
+
+// DupeMinSize keeps duplicate checking to files where it saves real space.
+const DupeMinSize = 1 << 20
+
+const noDupeFlags = scan.FlagCloudOnly | scan.FlagCloud | scan.FlagLink | scan.FlagSparse
 
 // NewCollector creates a collector. When csvPath is empty no CSV is written.
 func NewCollector(csvPath string) (*Collector, error) {
@@ -54,6 +66,13 @@ func NewCollector(csvPath string) (*Collector, error) {
 	return c, nil
 }
 
+// appInternal is true for app data folders. Apps keep their own copies of
+// files there, and nothing useful can be done about those duplicates.
+func appInternal(dir string) bool {
+	n := classify.Normalize(dir)
+	return strings.Contains(n, "/appdata/") || strings.Contains(n, ":/programdata/")
+}
+
 func yn(b bool) string {
 	if b {
 		return "yes"
@@ -69,6 +88,10 @@ func (c *Collector) Add(b scan.Batch) {
 		agg.Count[f.Res.V]++
 		if f.Flags&scan.FlagCloudOnly != 0 {
 			c.CloudOnlyBytes += f.Size
+		}
+		if c.FindDupes && f.Size >= DupeMinSize && f.Flags&noDupeFlags == 0 &&
+			(f.Res.V == classify.Backup || f.Res.V == classify.Review) && !appInternal(b.Dir) {
+			c.Candidates = append(c.Candidates, dupes.Candidate{Path: filepath.Join(b.Dir, f.Name), Size: f.Size, Node: f.Node, Name: f.Name})
 		}
 
 		h := &c.heaps[f.Res.V]

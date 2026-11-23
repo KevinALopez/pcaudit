@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,9 +13,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
+	"github.com/KevinALopez/pcaudit/internal/dupes"
+	"github.com/KevinALopez/pcaudit/internal/gitrepo"
 	"github.com/KevinALopez/pcaudit/internal/report"
 	"github.com/KevinALopez/pcaudit/internal/scan"
 )
@@ -33,6 +37,10 @@ func run() int {
 	workers := flag.Int("workers", 0, "parallel folder readers (default: 2x CPU cores, at least 8)")
 	noCSV := flag.Bool("no-csv", false, "skip the full files.csv listing")
 	noOpen := flag.Bool("no-open", false, "don't open the report when done")
+	noGit := flag.Bool("no-git", false, "don't ask git about repositories")
+	noDupes := flag.Bool("no-dupes", false, "don't look for duplicate files (skips reading file contents)")
+	rulesFlag := flag.String("rules", "", "your own rules file (default: "+rulesFileName+" next to pcaudit or in the current folder)")
+	printRules := flag.Bool("print-rules", false, "print the built-in rules in rules-file format and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "pcaudit %s: see what's on this computer before you wipe it.\n\n", version)
@@ -43,6 +51,18 @@ func run() int {
 	if *showVersion {
 		fmt.Println("pcaudit", version)
 		return 0
+	}
+	if *printRules {
+		b, _ := json.MarshalIndent(classify.DefaultRules(), "", "  ")
+		fmt.Println(string(b))
+		fmt.Fprintf(os.Stderr, "\nThese are the built-in rules, first match wins. Put your own in %s:\nthey're checked before all of these.\n", rulesFileName)
+		return 0
+	}
+
+	rulesPath, custom, err := loadRules(*rulesFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "can't use the rules file:", err)
+		return 1
 	}
 
 	roots := flag.Args()
@@ -80,11 +100,20 @@ func run() int {
 		return 1
 	}
 
-	cls := classify.New([]string{os.Getenv("OneDrive"), os.Getenv("OneDriveCommercial"), os.Getenv("OneDriveConsumer")})
+	col.FindDupes = !*noDupes
+	cls := classify.New([]string{os.Getenv("OneDrive"), os.Getenv("OneDriveCommercial"), os.Getenv("OneDriveConsumer")}, custom...)
+	useGit := !*noGit && gitrepo.Available()
 
 	fmt.Printf("pcaudit %s: scanning %s\n", version, strings.Join(roots, ", "))
-	fmt.Println("Read-only: only folder listings and file details are read, never file contents.")
+	if rulesPath != "" {
+		fmt.Printf("Using %d rules from %s\n", len(custom), rulesPath)
+	}
+	if !*noGit && !useGit {
+		fmt.Println("git isn't installed, so repositories won't be checked for unpushed work.")
+	}
+	fmt.Println("Read-only: nothing is changed, moved or uploaded.")
 	res := scan.Run(scan.Options{
+		Git:        useGit,
 		Roots:      roots,
 		Workers:    *workers,
 		Exclude:    []string{outDir},
@@ -100,17 +129,48 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "writing files.csv failed:", err)
 	}
 
+	var dupeGroups []dupes.Group
+	if col.FindDupes {
+		t := time.Now()
+		var mu sync.Mutex // the callback runs on every hashing goroutine
+		var last, fullStart time.Time
+		dupeGroups = dupes.Find(col.Candidates, *workers, func(phase string, done, total int64) {
+			mu.Lock()
+			defer mu.Unlock()
+			if time.Since(last) < 250*time.Millisecond && done != total {
+				return
+			}
+			last = time.Now()
+			if phase == "sample" {
+				fmt.Printf("\r  Looking for duplicates: sampled %s of %s files%20s", commas(done), commas(total), "")
+			} else {
+				if fullStart.IsZero() {
+					fullStart = time.Now()
+				}
+				eta := ""
+				if el := time.Since(fullStart); el > 3*time.Second && done > 0 && done < total {
+					left := time.Duration(float64(el) * float64(total-done) / float64(done))
+					eta = fmt.Sprintf(", about %s left (-no-dupes skips this)", left.Round(time.Second))
+				}
+				fmt.Printf("\r  Looking for duplicates: read %s of %s%s%20s", human(done), human(total), eta, "")
+			}
+		})
+		fmt.Printf("\r%-110s\r", "")
+		fmt.Printf("Duplicate check took %s.\n", time.Since(t).Round(time.Second))
+	}
+
 	meta := report.Meta{
 		Tool: "pcaudit", Version: version, Host: host, User: userName,
 		OS: runtime.GOOS + "/" + runtime.GOARCH, Started: started.Format(time.RFC3339),
-		DurationSec: res.Elapsed.Seconds(), Roots: roots,
+		DurationSec: time.Since(started).Seconds(), Roots: roots,
 		Files: res.Files, Dirs: res.Dirs, Bytes: res.Bytes, CloudOnly: col.CloudOnlyBytes,
-		Errors: res.Errors, Links: res.Links,
+		Errors: res.Errors, Links: res.Links, RulesFile: rulesPath, CustomRules: len(custom),
+		GitChecked: useGit, DupesChecked: col.FindDupes,
 	}
 	if csvPath != "" {
 		meta.CSV = "files.csv"
 	}
-	reportPath, err := report.Write(outDir, meta, res, col, cls)
+	reportPath, err := report.Write(outDir, meta, res, col, cls, dupeGroups)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "writing the report failed:", err)
 		return 1
@@ -126,8 +186,25 @@ func run() int {
 	for v := 0; v < int(classify.NumVerdicts); v++ {
 		fmt.Printf("  %-14s %10s  %12s files\n", classify.VerdictNames[v], human(all.Size[v]), commas(all.Count[v]))
 	}
+	fmt.Println()
+	if len(res.Repos) > 0 {
+		atRisk := 0
+		for _, r := range res.Repos {
+			if !r.Status.Clean() {
+				atRisk++
+			}
+		}
+		fmt.Printf("  %d git repositories, %d with work that isn't pushed anywhere.\n", len(res.Repos), atRisk)
+	}
+	if len(dupeGroups) > 0 {
+		var wasted int64
+		for _, g := range dupeGroups {
+			wasted += g.Wasted()
+		}
+		fmt.Printf("  %s in duplicate copies (%d sets of identical files).\n", human(wasted), len(dupeGroups))
+	}
 	if res.Errors > 0 {
-		fmt.Printf("\n  %d folders or files couldn't be read (listed in the report).\n", res.Errors)
+		fmt.Printf("  %d folders or files couldn't be read (listed in the report).\n", res.Errors)
 	}
 	fmt.Printf("\nReport: %s\n", reportPath)
 
@@ -135,6 +212,36 @@ func run() int {
 		openFile(reportPath)
 	}
 	return 0
+}
+
+const rulesFileName = "pcaudit-rules.json"
+
+// loadRules reads the rules file named by -rules, or else pcaudit-rules.json
+// next to the executable or in the current folder, if one exists.
+func loadRules(flagPath string) (string, []classify.RuleJSON, error) {
+	path := flagPath
+	if path == "" {
+		var tries []string
+		if exe, err := os.Executable(); err == nil {
+			tries = append(tries, filepath.Join(filepath.Dir(exe), rulesFileName))
+		}
+		tries = append(tries, rulesFileName)
+		for _, p := range tries {
+			if _, err := os.Stat(p); err == nil {
+				path = p
+				break
+			}
+		}
+	}
+	if path == "" {
+		return "", nil, nil
+	}
+	rules, err := classify.LoadRules(path)
+	if err != nil {
+		return "", nil, err
+	}
+	abs, _ := filepath.Abs(path)
+	return abs, rules, nil
 }
 
 func safeName(s string) string {

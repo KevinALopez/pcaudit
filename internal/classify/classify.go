@@ -169,7 +169,9 @@ type Classifier struct {
 
 // New builds a classifier. extraCloudRoots are absolute folders (such as the
 // OneDrive path from the environment) that should be treated as cloud-synced.
-func New(extraCloudRoots []string) *Classifier {
+// custom rules (from a rules file, already validated by LoadRules) are checked
+// before everything else.
+func New(extraCloudRoots []string, custom ...RuleJSON) *Classifier {
 	c := &Classifier{}
 	for _, s := range specs {
 		r := reason(s.reason)
@@ -185,7 +187,13 @@ func New(extraCloudRoots []string) *Classifier {
 		}
 		extra = append(extra, Rule{kind: absPrefix, pat: Normalize(root), V: Safe, Strong: true, Cloud: true, Reason: reason("OneDrive")})
 	}
-	c.rules = append(extra, c.rules...)
+	var mine []Rule
+	for _, r := range custom {
+		if cr, err := r.compile(); err == nil {
+			mine = append(mine, cr)
+		}
+	}
+	c.rules = append(append(mine, extra...), c.rules...)
 	return c
 }
 
@@ -322,6 +330,69 @@ func (c *Classifier) File(dirRule int, nameLower string, attrs uint32) Result {
 		}
 	}
 	return res(Review, rUnclassified)
+}
+
+// RepoPlace says where a file sits relative to a git repository.
+type RepoPlace uint8
+
+const (
+	NotInRepo   RepoPlace = iota // outside any repo, or ignored by git
+	RepoTracked                  // committed, unchanged
+	RepoChanged                  // modified or untracked
+	RepoGitDir                   // inside the .git folder (history, branches, stashes)
+)
+
+// RepoState is the part of a repository's git status that decides verdicts.
+type RepoState struct {
+	Known      bool // git answered
+	HasRemote  bool
+	HeadPushed bool // the checked-out branch is on a remote
+	AllPushed  bool // every branch and stash is on a remote
+}
+
+var (
+	rRepoUnknown    = reason("Git repo (couldn't ask git)")
+	rRepoChanged    = reason("Uncommitted change in a git repo")
+	rRepoNoRemote   = reason("Git repo with no remote")
+	rRepoUnpushed   = reason("Committed but not pushed")
+	rRepoPushed     = reason("Committed and pushed")
+	rHistoryPushed  = reason("Git history (all pushed)")
+	rHistoryPending = reason("Git history with unpushed work")
+)
+
+// FileInRepo classifies a file inside a git repository. Git's answer beats
+// the file type, but junk and reinstallable folders (node_modules, caches)
+// and cloud-synced files keep their normal verdict.
+func (c *Classifier) FileInRepo(dirRule int, nameLower string, attrs uint32, place RepoPlace, st RepoState) Result {
+	r := c.File(dirRule, nameLower, attrs)
+	if place == NotInRepo || attrs&AttrCloudAny != 0 || junkNames[nameLower] || r.Cat == TempLogs {
+		return r
+	}
+	if dirRule >= 0 {
+		if rule := &c.rules[dirRule]; rule.Strong && (rule.V == Junk || rule.V == Reinstall || rule.V == Safe) {
+			return r
+		}
+	}
+	res := func(v Verdict, why uint8) Result { return Result{r.Cat, v, why} }
+	if !st.Known {
+		return res(Review, rRepoUnknown)
+	}
+	switch place {
+	case RepoChanged:
+		return res(Backup, rRepoChanged)
+	case RepoGitDir:
+		if st.AllPushed {
+			return res(Safe, rHistoryPushed)
+		}
+		return res(Backup, rHistoryPending)
+	}
+	switch {
+	case !st.HasRemote:
+		return res(Backup, rRepoNoRemote)
+	case !st.HeadPushed:
+		return res(Backup, rRepoUnpushed)
+	}
+	return res(Safe, rRepoPushed)
 }
 
 // LinkReason is the reason shown for links that the scanner did not follow.

@@ -77,6 +77,15 @@ button.lnk:hover { color: var(--text); }
 dl.verdicts dt { font-weight: 600; margin-top: 10px; }
 dl.verdicts dd { margin: 2px 0 0 18px; color: var(--muted); }
 .theme { float: right; }
+ul.alerts { margin: 14px 0 0; padding-left: 18px; }
+ul.alerts li { margin: 4px 0; }
+ul.alerts a { color: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.dupe { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.dupe:last-of-type { border-bottom: 0; }
+.dupe ul { margin: 6px 0 0; padding-left: 18px; }
+.dupe li { margin: 2px 0; }
+.dupe a { cursor: pointer; text-decoration: none; }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: var(--chip); padding: 1px 5px; border-radius: 4px; }
 @media (max-width: 640px) {
   header, main { padding-left: 16px; padding-right: 16px; }
   td.barc { display: none; }
@@ -93,6 +102,8 @@ dl.verdicts dd { margin: 2px 0 0 18px; color: var(--muted); }
     <button data-tab="overview" class="on">Overview</button>
     <button data-tab="folders">Folders</button>
     <button data-tab="files">Files</button>
+    <button data-tab="repos">Git repos</button>
+    <button data-tab="dupes">Duplicates</button>
     <button data-tab="problems">Problems</button>
     <button data-tab="about">How to read this</button>
   </nav>
@@ -101,6 +112,8 @@ dl.verdicts dd { margin: 2px 0 0 18px; color: var(--muted); }
   <section id="overview" class="on"></section>
   <section id="folders"></section>
   <section id="files"></section>
+  <section id="repos"></section>
+  <section id="dupes"></section>
   <section id="problems"></section>
   <section id="about"></section>
 </main>
@@ -157,7 +170,52 @@ function pathOf(i) {
   return p;
 }
 const reasonText = r => r >= 0 ? D.reasons[r] : "";
-const FLAGS = [[1, "online-only"], [2, "hidden"], [4, "system"], [8, "link"], [16, "synced"], [32, "sparse: size shown is real disk use"]];
+const FLAGS = [[1, "online-only"], [2, "hidden"], [4, "system"], [8, "link"], [16, "synced"], [32, "sparse: size shown is real disk use"], [64, "duplicate"]];
+
+// ---------- repos and duplicates (shared helpers) ----------
+const repos = (D.repos || []).map(r => ({ node: r[0], remote: r[1], branch: r[2], changed: r[3], untracked: r[4], headUnpushed: r[5], allUnpushed: r[6], stashes: r[7], err: r[8], sizes: r[9] }));
+function repoState(r) {
+  if (r.err) return { v: 4, text: "Couldn't check: " + r.err };
+  const issues = [];
+  if (!r.remote) issues.push("no remote, so every commit exists only here");
+  if (r.allUnpushed) issues.push(`${num(r.allUnpushed)} unpushed commit${r.allUnpushed > 1 ? "s" : ""}`);
+  if (r.changed) issues.push(`${num(r.changed)} changed file${r.changed > 1 ? "s" : ""}`);
+  if (r.untracked) issues.push(`${num(r.untracked)} new file${r.untracked > 1 ? "s" : ""}`);
+  if (r.stashes) issues.push(`${num(r.stashes)} stash${r.stashes > 1 ? "es" : ""}`);
+  return issues.length ? { v: 0, text: issues.join(", ") } : { v: 1, text: "Clean and pushed" };
+}
+const reposAtRisk = repos.filter(r => repoState(r).v !== 1);
+const dupes = (D.dupes || []).map(d => ({ size: d[0], files: d[1].map(([node, name]) => ({ node, name })) }));
+const dupeWasted = dupes.reduce((s, d) => s + d.size * (d.files.length - 1), 0);
+
+// Folder pairs that hold identical files. A pair of matching sub-folders is
+// lifted to its parents while the folder names match, so two copies of an
+// extracted archive show up as one pair at the top of each copy.
+function isUnder(a, b) { for (let i = a; i >= 0; i = nodes[i].parent) if (i === b) return true; return false; }
+function liftPair(a, b) {
+  const same = (x, y) => nodes[x].name.toLowerCase() === nodes[y].name.toLowerCase();
+  for (;;) {
+    const pa = nodes[a].parent, pb = nodes[b].parent;
+    // Step up only while both folders and both parents have matching names.
+    if (pa < 0 || pb < 0 || !same(a, b) || !same(pa, pb)) return [a, b];
+    if (pa === pb || isUnder(pa, pb) || isUnder(pb, pa)) return [a, b];
+    a = pa; b = pb;
+  }
+}
+const dupePairs = (() => {
+  const pairs = new Map();
+  for (const d of dupes) {
+    const dirs = [...new Set(d.files.map(f => f.node))].filter(n => n >= 0).sort((x, y) => x - y);
+    for (let i = 0; i < dirs.length; i++) for (let j = i + 1; j < dirs.length; j++) {
+      const [a, b] = liftPair(dirs[i], dirs[j]);
+      const k = a < b ? a + "," + b : b + "," + a;
+      const p = pairs.get(k) || { a: Math.min(a, b), b: Math.max(a, b), bytes: 0, files: 0 };
+      p.bytes += d.size; p.files++;
+      pairs.set(k, p);
+    }
+  }
+  return [...pairs.values()].sort((x, y) => y.bytes - x.bytes);
+})();
 const flagTags = f => FLAGS.filter(([b]) => f & b && !(b === 16 && f & 1)).map(([, t]) => `<span class="tag">${t}</span>`).join("");
 
 async function copy(text, btn) {
@@ -226,9 +284,19 @@ function renderOverview() {
       <td class="n" style="color:${vc(0)}">${x.sizes[0] ? size(x.sizes[0]) : ""}</td>
       <td class="barc">${bar(x.sizes, maxC)}</td></tr>`).join("");
 
+  const alerts = [];
+  if (reposAtRisk.length)
+    alerts.push(`<li><a data-goto="repos"><b style="color:${vc(0)}">${num(reposAtRisk.length)} of ${num(repos.length)} git repositories</b> have work that isn't pushed anywhere.</a></li>`);
+  else if (repos.length)
+    alerts.push(`<li><a data-goto="repos">All ${num(repos.length)} git repositories are committed and pushed.</a></li>`);
+  if (dupes.length)
+    alerts.push(`<li><a data-goto="dupes"><b>${size(dupeWasted)}</b> of your files are duplicate copies (${num(dupes.length)} sets). You only need to back up one of each.</a></li>`);
+  if (m.rulesFile) alerts.push(`<li>Using ${num(m.customRules)} of your own rules from <span class="path">${esc(m.rulesFile)}</span>.</li>`);
+
   $("#overview").innerHTML = `
     <div class="cards">${cards}</div>
     <div class="panel"><p class="lead">${lead}</p>${bar(totals, 0, true)}${legend()}
+      ${alerts.length ? `<ul class="alerts">${alerts.join("")}</ul>` : ""}
       <p class="note">${size(grand)} counted in total. Sizes are file sizes, so Windows hard links can make the system folders look bigger than the disk usage.</p></div>
     <div class="panel"><h2>Back-up checklist: where your irreplaceable files are</h2>
       <div class="tw"><table><thead><tr><th>Folder</th><th>Why</th><th class="n">Back up</th><th class="n">Files</th><th class="hide-sm">All verdicts in this folder</th></tr></thead>
@@ -239,6 +307,8 @@ function renderOverview() {
       <tbody>${catRows}</tbody></table></div></div>`;
 
   $("#overview").addEventListener("click", e => {
+    const go = e.target.closest("[data-goto]");
+    if (go) { show(go.dataset.goto); return; }
     const card = e.target.closest(".card");
     if (card) { fs.verdicts = new Set([+card.dataset.v]); fs.cat = -1; fs.page = 0; renderFiles(); show("files"); return; }
     const row = e.target.closest("tr[data-node]");
@@ -373,6 +443,63 @@ function renderFiles() {
   $("#fpager").innerHTML = pages > 1 ? `<button class="lnk" data-page="-1" ${fs.page === 0 ? "disabled" : ""}>‹ Prev</button> page ${fs.page + 1} of ${pages} <button class="lnk" data-page="1" ${fs.page >= pages - 1 ? "disabled" : ""}>Next ›</button>` : "";
 }
 
+// ---------- git repos ----------
+function renderRepos() {
+  const box = $("#repos");
+  if (!m.gitChecked) {
+    box.innerHTML = `<div class="panel"><h2>Git repositories</h2><p class="dim">Repositories weren't checked, either because git isn't installed or because the scan ran with -no-git. Code in them is sorted by file type only.</p></div>`;
+    return;
+  }
+  const rows = repos.map(r => {
+    const st = repoState(r), p = pathOf(r.node);
+    return `<tr class="click" data-node="${r.node}">
+      <td class="path">${esc(p)} <button class="lnk" data-copy="${esc(p)}">copy</button>
+        ${r.remote ? `<div class="dim" style="font-size:12px">${esc(r.remote)}</div>` : ""}</td>
+      <td class="dim hide-sm">${esc(r.branch || "")}</td>
+      <td>${vtag(st.v)}<div class="dim" style="font-size:12px">${esc(st.text)}</div></td>
+      <td class="n">${size(sum(r.sizes))}</td></tr>`;
+  }).join("");
+  box.innerHTML = `<div class="panel"><h2>Git repositories (${num(repos.length)})</h2>
+    <p class="note" style="margin:0 0 10px">git was asked about every repository it found. Committed and pushed files count as <b>Already safe</b>. Changed, new or unpushed work counts as <b>Back up</b>, and so does the hidden .git folder of a repo with unpushed commits or stashes. Files git ignores, like node_modules or build output, follow the normal rules.</p>
+    ${repos.length ? `<div class="tw"><table><thead><tr><th>Repository</th><th class="hide-sm">Branch</th><th>Status</th><th class="n">Size</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>` : `<p class="dim">No git repositories found.</p>`}</div>`;
+}
+$("#repos").addEventListener("click", e => {
+  const row = e.target.closest("tr[data-node]");
+  if (row) openFolder(+row.dataset.node);
+});
+
+// ---------- duplicates ----------
+let dupeLimit = 100;
+function renderDupes() {
+  const box = $("#dupes");
+  if (!m.dupesChecked) {
+    box.innerHTML = `<div class="panel"><h2>Duplicates</h2><p class="dim">The duplicate check was turned off with -no-dupes.</p></div>`;
+    return;
+  }
+  const list = dupes.slice(0, dupeLimit).map(d => `<div class="dupe">
+      <div><b>${size(d.size)}</b> × ${d.files.length} copies <span class="dim">· ${size(d.size * (d.files.length - 1))} extra</span></div>
+      <ul>${d.files.map(f => { const p = pathOf(f.node) + sep + f.name; return `<li class="path"><a class="dim" data-folder="${f.node}">${esc(pathOf(f.node))}${esc(sep)}</a>${esc(f.name)} <button class="lnk" data-copy="${esc(p)}">copy</button></li>`; }).join("")}</ul>
+    </div>`).join("");
+  box.innerHTML = `<div class="panel"><h2>Duplicate files</h2>
+    <p class="lead">${dupes.length ? `<b>${size(dupeWasted)}</b> is taken by extra copies, in ${num(dupes.length)} sets of identical files.` : "No duplicates found."}</p>
+    <p class="note" style="margin:0 0 6px">Files of ${size(m.dupeMinSize)} or more that are marked Back up or Review were compared byte for byte (SHA-256). Online-only files were skipped so nothing gets downloaded. Copies count as duplicates even when their names differ.</p></div>
+    ${dupePairs.length ? `<div class="panel"><h2>Folders that are copies of each other</h2>
+      <div class="tw"><table><thead><tr><th>Folder</th><th>Has the same files as</th><th class="n">Identical</th><th class="n">Files</th></tr></thead><tbody>
+      ${dupePairs.slice(0, 25).map(p => `<tr><td class="path"><a class="dim" data-folder="${p.a}">${esc(pathOf(p.a))}</a></td>
+        <td class="path"><a class="dim" data-folder="${p.b}">${esc(pathOf(p.b))}</a></td>
+        <td class="n">${size(p.bytes)}</td><td class="n">${num(p.files)}</td></tr>`).join("")}
+      </tbody></table></div>
+      <p class="note">Usually the same archive extracted twice, or a folder copied as a backup. Click a folder to open it.</p></div>` : ""}
+    ${dupes.length ? `<div class="panel"><h2>Every set of identical files</h2>${list}
+      ${dupes.length > dupeLimit ? `<button class="lnk" id="dupemore">Show ${num(Math.min(100, dupes.length - dupeLimit))} more</button>` : ""}</div>` : ""}`;
+}
+$("#dupes").addEventListener("click", e => {
+  if (e.target.id === "dupemore") { dupeLimit += 100; renderDupes(); return; }
+  const fo = e.target.closest("[data-folder]");
+  if (fo) openFolder(+fo.dataset.folder);
+});
+
 // ---------- problems ----------
 function renderProblems() {
   const errs = D.errors || [];
@@ -398,11 +525,12 @@ function renderAbout() {
     <div class="panel"><h2>How files are sorted</h2>
       <p>First comes the <b>folder</b>. Known places decide a lot: <i>Program Files</i> and <i>Windows</i> are reinstallable, caches and <i>Temp</i> are junk, <i>.ssh</i> and editor settings get backed up, and OneDrive is already safe. Then comes the <b>file type</b>. Inside your own folders, documents, photos and videos get backed up, and installers count as reinstallable.</p>
       <p>A file in a sync folder only counts as <b>Already safe</b> when Windows marks it as managed by the sync client. If a OneDrive file has no sync markers, it's put under Review.</p>
-      <p>Source code is marked Review for now. A later version checks whether each git repository has unpushed work.</p>
-      <p class="note">Nothing was uploaded anywhere. The tool only read folder listings and file details, never file contents. The report contains your file names, so keep it private.</p></div>`;
+      <p>Inside a <b>git repository</b>, git decides. Committed and pushed files are already safe. Anything changed, new or not pushed needs a backup.</p>
+      <p>Your own rules from <span class="path">pcaudit-rules.json</span> are checked before everything else. Run <code>pcaudit -print-rules</code> to see the built-in ones.</p>
+      <p class="note">Nothing was changed or uploaded. Apart from comparing possible duplicates, the tool only read folder listings and file details. The report contains your file names, so keep it private.</p></div>`;
 }
 
-renderOverview(); renderFolders(); renderFiles(); renderProblems(); renderAbout();
+renderOverview(); renderFolders(); renderFiles(); renderRepos(); renderDupes(); renderProblems(); renderAbout();
 </script>
 </body>
 </html>

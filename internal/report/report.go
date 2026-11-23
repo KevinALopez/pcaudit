@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
+	"github.com/KevinALopez/pcaudit/internal/dupes"
+	"github.com/KevinALopez/pcaudit/internal/gitrepo"
 	"github.com/KevinALopez/pcaudit/internal/scan"
 )
 
@@ -37,27 +39,59 @@ type Meta struct {
 	Embedded    int      `json:"embeddedFiles"`
 	KeptNodes   int      `json:"keptFolders"`
 	CSV         string   `json:"csv,omitempty"`
+
+	RulesFile    string `json:"rulesFile,omitempty"`
+	CustomRules  int    `json:"customRules,omitempty"`
+	GitChecked   bool   `json:"gitChecked"`
+	DupesChecked bool   `json:"dupesChecked"`
+	DupeMinSize  int64  `json:"dupeMinSize"`
 }
 
+// maxDupeGroups caps how many duplicate sets the report lists.
+const maxDupeGroups = 1000
+
 type payload struct {
-	Meta       Meta       `json:"meta"`
-	Verdicts   []string   `json:"verdicts"`
-	Categories []string   `json:"categories"`
-	Reasons    []string   `json:"reasons"`
-	CatSizes   [][]int64  `json:"catSizes"`  // [category][verdict] bytes
-	CatCounts  [][]int64  `json:"catCounts"` // [category][verdict] files
-	Nodes      [][]any    `json:"nodes"`     // parent, name, totalCount, [sizes per verdict], [own sizes per verdict], ownCount, reason, err
-	Files      [][]any    `json:"files"`     // node, name, size, mtime, category, verdict, reason, flags
-	Groups     [][]any    `json:"groups"`    // node, reason, [sizes per verdict], [counts per verdict]
-	Errors     [][]any    `json:"errors"`    // path, message, expected (0/1); unexpected ones first
+	Meta       Meta      `json:"meta"`
+	Verdicts   []string  `json:"verdicts"`
+	Categories []string  `json:"categories"`
+	Reasons    []string  `json:"reasons"`
+	CatSizes   [][]int64 `json:"catSizes"`  // [category][verdict] bytes
+	CatCounts  [][]int64 `json:"catCounts"` // [category][verdict] files
+	Nodes      [][]any   `json:"nodes"`     // parent, name, totalCount, [sizes per verdict], [own sizes per verdict], ownCount, reason, err
+	Files      [][]any   `json:"files"`     // node, name, size, mtime, category, verdict, reason, flags
+	Groups     [][]any   `json:"groups"`    // node, reason, [sizes per verdict], [counts per verdict]
+	Errors     [][]any   `json:"errors"`    // path, message, expected (0/1); unexpected ones first
+	Repos      [][]any   `json:"repos"`     // node, remote, branch, changed, untracked, headUnpushed, allUnpushed, stashes, error, [sizes per verdict]
+	Dupes      [][]any   `json:"dupes"`     // size, [[node, name], ...]
 }
 
 // Write produces report.html and summary.json in outDir. It returns the
 // report path.
-func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *classify.Classifier) (string, error) {
+func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *classify.Classifier, dupeGroups []dupes.Group) (string, error) {
 	nodes := res.Nodes
 	files := col.Embedded()
 	sort.Slice(files, func(i, j int) bool { return files[i].Size > files[j].Size })
+	if len(dupeGroups) > maxDupeGroups {
+		dupeGroups = dupeGroups[:maxDupeGroups]
+	}
+	meta.DupeMinSize = DupeMinSize
+
+	// Flag the embedded files that have an identical copy somewhere.
+	type fileKey struct {
+		node int32
+		name string
+	}
+	isDupe := map[fileKey]bool{}
+	for _, g := range dupeGroups {
+		for _, f := range g.Files {
+			isDupe[fileKey{f.Node, f.Name}] = true
+		}
+	}
+	for i := range files {
+		if isDupe[fileKey{files[i].Node, files[i].Name}] {
+			files[i].Flags |= scan.FlagDupe
+		}
+	}
 
 	groupOf := computeGroups(nodes)
 
@@ -88,6 +122,14 @@ func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *clas
 	}
 	for _, f := range files {
 		mark(f.Node)
+	}
+	for _, r := range res.Repos {
+		mark(r.Node)
+	}
+	for _, g := range dupeGroups {
+		for _, f := range g.Files {
+			mark(f.Node)
+		}
 	}
 
 	remap := make([]int32, len(nodes))
@@ -170,6 +212,20 @@ func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *clas
 		p.Errors = append(p.Errors, []any{e.Path, e.Msg, exp})
 	}
 
+	repos := sortedRepos(res)
+	for _, r := range repos {
+		st := r.Status
+		p.Repos = append(p.Repos, []any{remap[r.Node], st.Remote, st.Branch, st.Changed, st.Untracked,
+			st.HeadUnpushed, st.AllUnpushed, st.Stashes, st.Err, nodes[r.Node].Total.Size[:]})
+	}
+	for _, g := range dupeGroups {
+		list := make([][]any, len(g.Files))
+		for i, f := range g.Files {
+			list[i] = []any{remap[f.Node], f.Name}
+		}
+		p.Dupes = append(p.Dupes, []any{g.Size, list})
+	}
+
 	meta.Embedded = len(p.Files)
 	meta.KeptNodes = len(p.Nodes)
 	p.Meta = meta
@@ -184,10 +240,23 @@ func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *clas
 		return "", err
 	}
 
-	if err := writeSummary(outDir, meta, nodes, groups, col, cls); err != nil {
+	if err := writeSummary(outDir, meta, nodes, groups, col, cls, repos, dupeGroups); err != nil {
 		return "", err
 	}
 	return reportPath, nil
+}
+
+// sortedRepos puts repositories with work at risk first, biggest first.
+func sortedRepos(res *scan.Result) []scan.Repo {
+	repos := append([]scan.Repo(nil), res.Repos...)
+	sort.SliceStable(repos, func(i, j int) bool {
+		a, b := repos[i].Status.Clean(), repos[j].Status.Clean()
+		if a != b {
+			return !a
+		}
+		return res.Nodes[repos[i].Node].Total.TotalSize() > res.Nodes[repos[j].Node].Total.TotalSize()
+	})
+	return repos
 }
 
 // groupOut is the total size of one group of folders (see computeGroups).
@@ -241,6 +310,17 @@ func nodePath(nodes []scan.Node, i int32) string {
 	return filepath.Join(parts...)
 }
 
+type repo struct {
+	*gitrepo.Status
+	Clean bool `json:"clean"`
+}
+
+type dupe struct {
+	Size   int64    `json:"size"`
+	Wasted int64    `json:"wasted"`
+	Paths  []string `json:"paths"`
+}
+
 type verdictTotal struct {
 	Verdict string `json:"verdict"`
 	Bytes   int64  `json:"bytes"`
@@ -255,7 +335,7 @@ func totals(a scan.Agg) []verdictTotal {
 	return out
 }
 
-func writeSummary(outDir string, meta Meta, nodes []scan.Node, groups []*groupOut,col *Collector, cls *classify.Classifier) error {
+func writeSummary(outDir string, meta Meta, nodes []scan.Node, groups []*groupOut, col *Collector, cls *classify.Classifier, repos []scan.Repo, dupeGroups []dupes.Group) error {
 	var all scan.Agg
 	for i := range nodes {
 		if nodes[i].Parent < 0 {
@@ -277,7 +357,20 @@ func writeSummary(outDir string, meta Meta, nodes []scan.Node, groups []*groupOu
 		Totals     []verdictTotal `json:"totals"`
 		Categories []category     `json:"categories"`
 		Groups     []group        `json:"groups"`
+		Repos      []repo         `json:"repos"`
+		Duplicates []dupe         `json:"duplicates"`
 	}{Meta: meta, Generated: time.Now().Format(time.RFC3339), Totals: totals(all)}
+
+	for _, r := range repos {
+		out.Repos = append(out.Repos, repo{r.Status, r.Status.Clean()})
+	}
+	for _, g := range dupeGroups {
+		d := dupe{Size: g.Size, Wasted: g.Wasted()}
+		for _, f := range g.Files {
+			d.Paths = append(d.Paths, f.Path)
+		}
+		out.Duplicates = append(out.Duplicates, d)
+	}
 
 	for c := range col.CatAgg {
 		out.Categories = append(out.Categories, category{classify.CategoryNames[c], totals(col.CatAgg[c])})

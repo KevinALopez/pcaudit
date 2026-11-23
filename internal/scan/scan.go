@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
+	"github.com/KevinALopez/pcaudit/internal/gitrepo"
 )
 
 const nv = classify.NumVerdicts
@@ -61,6 +62,7 @@ const (
 	FlagLink
 	FlagCloud  // managed by a sync client
 	FlagSparse // sparse file: Size is what it really uses on disk, Logical is its nominal size
+	FlagDupe   // has an identical copy elsewhere (set when the report is written)
 )
 
 type File struct {
@@ -69,8 +71,8 @@ type File struct {
 	Size    int64
 	Logical int64
 	MTime   int64
-	Res   classify.Result
-	Flags uint8
+	Res     classify.Result
+	Flags   uint8
 }
 
 // Batch is the files of one folder, handed to OnBatch.
@@ -98,11 +100,19 @@ type Options struct {
 	Classifier *classify.Classifier
 	OnBatch    func(Batch) // always called from one goroutine
 	Progress   func(Stats)
+	Git        bool // ask git about every repository found
+}
+
+// Repo is a git repository found during the scan.
+type Repo struct {
+	Node   int32
+	Status *gitrepo.Status
 }
 
 type Result struct {
 	Nodes   []Node
 	ErrList []ErrEntry // the first maxErrors problems; Stats.Errors has the full count
+	Repos   []Repo
 	Stats
 	Elapsed time.Duration
 }
@@ -112,6 +122,16 @@ const maxErrors = 2000
 type job struct {
 	node int32
 	path string
+	repo *repoCtx // nil outside git repositories
+}
+
+// repoCtx is a folder's position inside a git repository.
+type repoCtx struct {
+	st      *gitrepo.Status
+	state   classify.RepoState
+	rel     string // folder relative to the repo root: "" or "src/app/"
+	ignored bool   // git ignores this folder
+	gitDir  bool   // inside .git
 }
 
 type scanner struct {
@@ -121,6 +141,7 @@ type scanner struct {
 	mu    sync.Mutex // guards nodes and errors
 	nodes []Node
 	errs  []ErrEntry
+	repos []Repo
 
 	qmu     sync.Mutex
 	qcond   *sync.Cond
@@ -152,7 +173,7 @@ func Run(opt Options) *Result {
 		}
 		idx := int32(len(s.nodes))
 		s.nodes = append(s.nodes, Node{Parent: -1, Name: abs, Rule: int16(s.cls.DirRule(abs))})
-		s.push(job{idx, abs})
+		s.push(job{node: idx, path: abs})
 	}
 
 	collected := make(chan struct{})
@@ -209,7 +230,7 @@ func Run(opt Options) *Result {
 			s.nodes[n.Parent].Total.Add(&n.Total)
 		}
 	}
-	return &Result{Nodes: s.nodes, ErrList: s.errs,Stats: s.stats(), Elapsed: time.Since(start)}
+	return &Result{Nodes: s.nodes, ErrList: s.errs, Repos: s.repos, Stats: s.stats(), Elapsed: time.Since(start)}
 }
 
 func (s *scanner) stats() Stats {
@@ -277,6 +298,68 @@ func (s *scanner) addErr(path string, err error) {
 type subdir struct {
 	name, path string
 	rule       int16
+	repo       *repoCtx
+}
+
+// repoHere starts a repo context when this folder is a git repository root.
+// Repos inside junk or reinstallable places (node_modules, editor extensions)
+// aren't worth a git call.
+func (s *scanner) repoHere(j job, dirRule int, entries []os.DirEntry) *repoCtx {
+	if !s.opt.Git || (j.repo != nil && j.repo.gitDir) {
+		return j.repo
+	}
+	if dirRule >= 0 {
+		if r := s.cls.Rule(dirRule); r.Strong && (r.V == classify.Junk || r.V == classify.Reinstall) {
+			return j.repo
+		}
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name() == ".git" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return j.repo
+	}
+	st := gitrepo.Check(j.path)
+	s.mu.Lock()
+	s.repos = append(s.repos, Repo{Node: j.node, Status: st})
+	s.mu.Unlock()
+	return &repoCtx{st: st, state: classify.RepoState{
+		Known: st.Known(), HasRemote: st.HasRemote(), HeadPushed: st.HeadPushed(), AllPushed: st.AllPushed(),
+	}}
+}
+
+// child returns the repo context for a subfolder.
+func (c *repoCtx) child(name string) *repoCtx {
+	if c == nil {
+		return nil
+	}
+	n := *c
+	n.rel = c.rel + name + "/"
+	switch {
+	case c.rel == "" && name == ".git":
+		n.gitDir = true
+	case !c.ignored && !c.gitDir && c.st.IsIgnoredDir(n.rel):
+		n.ignored = true
+	}
+	return &n
+}
+
+// place says how git sees a file in this folder.
+func (c *repoCtx) place(name string) classify.RepoPlace {
+	rel := c.rel + name
+	switch {
+	case c.gitDir:
+		return classify.RepoGitDir
+	case c.ignored || c.st.IsIgnored(rel):
+		return classify.NotInRepo
+	case c.st.IsChanged(rel):
+		return classify.RepoChanged
+	}
+	return classify.RepoTracked
 }
 
 func (s *scanner) process(j job) {
@@ -293,6 +376,7 @@ func (s *scanner) process(j job) {
 	if err != nil {
 		s.addErr(j.path, err)
 	}
+	repo := s.repoHere(j, dirRule, entries)
 
 	var own Agg
 	var subs []subdir
@@ -323,7 +407,7 @@ func (s *scanner) process(j job) {
 				s.links.Add(1)
 				continue
 			}
-			subs = append(subs, subdir{e.Name(), full, int16(rule)})
+			subs = append(subs, subdir{e.Name(), full, int16(rule), repo.child(e.Name())})
 			continue
 		}
 
@@ -348,6 +432,8 @@ func (s *scanner) process(j job) {
 			flags |= FlagLink
 			s.links.Add(1)
 			res = classify.Result{Cat: classify.CategoryOf(nameL), V: classify.Review, Reason: classify.LinkReason()}
+		} else if repo != nil {
+			res = s.cls.FileInRepo(dirRule, nameL, a, repo.place(e.Name()), repo.state)
 		} else {
 			res = s.cls.File(dirRule, nameL, a)
 		}
@@ -376,7 +462,7 @@ func (s *scanner) process(j job) {
 	s.mu.Unlock()
 
 	for i, sd := range subs {
-		s.push(job{first + int32(i), sd.path})
+		s.push(job{node: first + int32(i), path: sd.path, repo: sd.repo})
 	}
 
 	s.files.Add(int64(len(files)))

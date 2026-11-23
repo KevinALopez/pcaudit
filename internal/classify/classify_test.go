@@ -5,6 +5,51 @@ import (
 	"testing"
 )
 
+func TestCustomRules(t *testing.T) {
+	c := New(nil,
+		RuleJSON{Where: "path", Pattern: `D:\Archive`, Verdict: "safe", Reason: "On my NAS"},
+		RuleJSON{Where: "user", Pattern: "Documents/Scratch", Verdict: "junk", Strong: true},
+		RuleJSON{Where: "anywhere", Pattern: "renders", Verdict: "reinstall", Strong: true},
+	)
+	cases := []struct {
+		path string
+		want Verdict
+	}{
+		{`D:\Archive\2019\taxes.pdf`, Safe},
+		{`D:\Archived\taxes.pdf`, Backup}, // "path" matches the folder, not a name prefix
+		{`C:\Users\me\Documents\Scratch\notes.txt`, Junk},
+		{`C:\Users\me\Documents\Real\notes.txt`, Backup},
+		{`E:\proj\renders\frame001.png`, Reinstall},
+	}
+	for _, tc := range cases {
+		i := strings.LastIndex(tc.path, `\`)
+		r := c.File(c.DirRule(tc.path[:i+1]), strings.ToLower(tc.path[i+1:]), 0)
+		if r.V != tc.want {
+			t.Errorf("%s: got %s (%s), want %s", tc.path, VerdictNames[r.V], Reasons[r.Reason], VerdictNames[tc.want])
+		}
+	}
+
+	for _, bad := range []RuleJSON{
+		{Where: "everywhere", Pattern: "x", Verdict: "junk"},
+		{Where: "user", Pattern: "x", Verdict: "delete"},
+		{Where: "user", Pattern: "/", Verdict: "junk"},
+	} {
+		if _, err := bad.compile(); err == nil {
+			t.Errorf("%+v: expected an error", bad)
+		}
+	}
+
+	// The defaults round-trip through the file format.
+	if n := len(DefaultRules().Rules); n < 100 {
+		t.Errorf("only %d default rules exported", n)
+	}
+	for _, r := range DefaultRules().Rules {
+		if _, err := r.compile(); err != nil {
+			t.Errorf("default rule %+v doesn't compile: %v", r, err)
+		}
+	}
+}
+
 func TestVerdicts(t *testing.T) {
 	c := New([]string{`C:\Users\me\OneDrive`})
 	cases := []struct {
