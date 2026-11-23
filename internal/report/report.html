@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PC Audit Report</title>
+<style>
+:root {
+  --bg: #f6f6f8; --panel: #ffffff; --text: #1c1c21; --muted: #676774; --line: #e3e3ea; --hover: #f0f0f5;
+  --accent: #3b5bdb; --chip: #ececf2;
+  --v0: #d9480f; --v1: #2b8a3e; --v2: #1c7ed6; --v3: #a5acb3; --v4: #e8a100;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131316; --panel: #1c1c21; --text: #ececf1; --muted: #9b9ba8; --line: #2d2d35; --hover: #25252c;
+    --accent: #8ea2ff; --chip: #2a2a32;
+    --v0: #ff7a45; --v1: #51cf66; --v2: #4dabf7; --v3: #6f777e; --v4: #ffc53d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131316; --panel: #1c1c21; --text: #ececf1; --muted: #9b9ba8; --line: #2d2d35; --hover: #25252c;
+  --accent: #8ea2ff; --chip: #2a2a32;
+  --v0: #ff7a45; --v1: #51cf66; --v2: #4dabf7; --v3: #6f777e; --v4: #ffc53d;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { padding: 20px 24px 0; max-width: 1200px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+h2 { font-size: 16px; margin: 0 0 12px; }
+.meta { color: var(--muted); font-size: 13px; }
+nav { display: flex; gap: 4px; margin-top: 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+nav button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 12px; font: inherit; cursor: pointer; white-space: nowrap; }
+nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 60px; }
+section { display: none; }
+section.on { display: block; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid; border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+.card:hover { background: var(--hover); }
+.card .k { font-size: 13px; color: var(--muted); }
+.card .v { font-size: 22px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.card .s { font-size: 12px; color: var(--muted); }
+.lead { font-size: 15px; margin: 0 0 12px; }
+.bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--chip); min-width: 40px; }
+.bar.big { height: 18px; border-radius: 6px; }
+.bar span { display: block; height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.tw { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.click { cursor: pointer; }
+tr.click:hover td { background: var(--hover); }
+td.barc { width: 28%; min-width: 120px; }
+.path { word-break: break-all; }
+.dim { color: var(--muted); }
+.tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 10px; background: var(--chip); color: var(--muted); margin-left: 6px; white-space: nowrap; }
+.vt { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 10px; color: #fff; white-space: nowrap; font-weight: 600; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.toolbar input, .toolbar select { font: inherit; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); }
+.toolbar input[type=search] { flex: 1; min-width: 180px; }
+.chip { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); cursor: pointer; }
+.chip.on { color: var(--text); border-color: currentColor; font-weight: 600; }
+.crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 12px; font-size: 14px; }
+.crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 10px; color: var(--muted); }
+button.lnk { background: none; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; padding: 2px 8px; }
+button.lnk:hover { color: var(--text); }
+.note { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+dl.verdicts dt { font-weight: 600; margin-top: 10px; }
+dl.verdicts dd { margin: 2px 0 0 18px; color: var(--muted); }
+.theme { float: right; }
+@media (max-width: 640px) {
+  header, main { padding-left: 16px; padding-right: 16px; }
+  td.barc { display: none; }
+  .hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <button class="lnk theme" id="theme" title="Switch light or dark">Theme</button>
+  <h1>PC Audit Report</h1>
+  <div class="meta" id="meta"></div>
+  <nav id="tabs">
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="folders">Folders</button>
+    <button data-tab="files">Files</button>
+    <button data-tab="problems">Problems</button>
+    <button data-tab="about">How to read this</button>
+  </nav>
+</header>
+<main>
+  <section id="overview" class="on"></section>
+  <section id="folders"></section>
+  <section id="files"></section>
+  <section id="problems"></section>
+  <section id="about"></section>
+</main>
+<script id="data" type="application/json">__PCAUDIT_DATA__</script>
+<script>
+"use strict";
+const D = JSON.parse(document.getElementById("data").textContent);
+const NV = D.verdicts.length;
+const VDESC = [
+  "Exists only on this PC. Copy it somewhere before you wipe.",
+  "Already exists somewhere else, such as OneDrive or another sync client.",
+  "Can be downloaded or installed again: Windows, programs, dependencies, games.",
+  "Caches, temp files and leftovers. Fine to lose.",
+  "The tool couldn't decide. Have a quick look.",
+];
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const sum = a => a.reduce((x, y) => x + y, 0);
+const vc = v => `var(--v${v})`;
+function size(b) {
+  if (b < 1024) return b + " B";
+  const u = "KMGTPE"; let i = -1;
+  do { b /= 1024; i++; } while (b >= 1024 && i < u.length - 1);
+  return (b >= 100 ? b.toFixed(0) : b >= 10 ? b.toFixed(1) : b.toFixed(2)) + " " + u[i] + "B";
+}
+const num = n => n.toLocaleString();
+const day = t => t > 0 ? new Date(t * 1000).toISOString().slice(0, 10) : "";
+const vtag = v => `<span class="vt" style="background:${vc(v)}">${esc(D.verdicts[v])}</span>`;
+function bar(sizes, max, big) {
+  const total = max || sum(sizes) || 1;
+  return `<div class="bar${big ? " big" : ""}">` + sizes.map((s, v) => s > 0 ? `<span style="width:${(s / total * 100).toFixed(3)}%;background:${vc(v)}" title="${esc(D.verdicts[v])}: ${size(s)}"></span>` : "").join("") + "</div>";
+}
+const legend = () => `<div class="legend">${D.verdicts.map((n, v) => `<span><span class="dot" style="background:${vc(v)}"></span>${esc(n)}</span>`).join("")}</div>`;
+
+// ---------- data ----------
+const nodes = D.nodes.map((n, i) => ({ i, parent: n[0], name: n[1], count: n[2], sizes: n[3], own: n[4], ownCount: n[5], reason: n[6], err: n[7], kids: [], files: [] }));
+for (const n of nodes) { n.size = sum(n.sizes); if (n.parent >= 0) nodes[n.parent].kids.push(n.i); }
+const files = D.files.map(f => ({ node: f[0], name: f[1], size: f[2], mtime: f[3], cat: f[4], v: f[5], reason: f[6], flags: f[7] }));
+for (const f of files) if (f.node >= 0) nodes[f.node].files.push(f);
+const roots = nodes.filter(n => n.parent < 0);
+const totals = Array(NV).fill(0), counts = Array(NV).fill(0);
+for (const r of roots) r.sizes.forEach((s, v) => totals[v] += s);
+for (const c of D.catCounts) c.forEach((n, v) => counts[v] += n);
+const grand = sum(totals);
+const sep = (roots[0] && roots[0].name.includes("\\")) ? "\\" : "/";
+const pathMemo = new Map();
+function pathOf(i) {
+  if (i < 0) return "";
+  if (pathMemo.has(i)) return pathMemo.get(i);
+  const n = nodes[i];
+  let p = n.parent < 0 ? n.name : pathOf(n.parent);
+  if (n.parent >= 0) p = (p.endsWith(sep) ? p : p + sep) + n.name;
+  pathMemo.set(i, p);
+  return p;
+}
+const reasonText = r => r >= 0 ? D.reasons[r] : "";
+const FLAGS = [[1, "online-only"], [2, "hidden"], [4, "system"], [8, "link"], [16, "synced"], [32, "sparse: size shown is real disk use"]];
+const flagTags = f => FLAGS.filter(([b]) => f & b && !(b === 16 && f & 1)).map(([, t]) => `<span class="tag">${t}</span>`).join("");
+
+async function copy(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = document.createElement("textarea"); t.value = text; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
+  if (btn) { const o = btn.textContent; btn.textContent = "copied"; setTimeout(() => btn.textContent = o, 900); }
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-copy]");
+  if (b) { e.stopPropagation(); copy(b.dataset.copy, b); }
+});
+
+// ---------- header and tabs ----------
+const m = D.meta;
+$("#meta").innerHTML = [
+  `<b>${esc(m.host)}</b>`, esc(m.user), new Date(m.started).toLocaleString(),
+  `scanned ${esc(m.roots.join(", "))}`, `${num(m.files)} files in ${num(m.dirs)} folders`, `took ${Math.round(m.durationSec)} s`, `pcaudit ${esc(m.version)}`,
+].join(" · ");
+
+function show(tab) {
+  for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === tab);
+  for (const s of document.querySelectorAll("main section")) s.classList.toggle("on", s.id === tab);
+  window.scrollTo(0, 0);
+}
+$("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) show(b.dataset.tab); });
+
+const themeBtn = $("#theme");
+themeBtn.addEventListener("click", () => {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const cur = document.documentElement.dataset.theme || (dark ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("pcaudit-theme", next); } catch {}
+});
+try { const t = localStorage.getItem("pcaudit-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+
+// ---------- overview ----------
+function renderOverview() {
+  const cards = D.verdicts.map((name, v) => `
+    <div class="card" style="border-left-color:${vc(v)}" data-v="${v}">
+      <div class="k">${esc(name)}</div>
+      <div class="v">${size(totals[v])}</div>
+      <div class="s">${num(counts[v])} files · ${grand ? (totals[v] / grand * 100).toFixed(1) : 0}%</div>
+    </div>`).join("");
+
+  const cloud = m.cloudOnlyBytes > 0 ? ` ${size(m.cloudOnlyBytes)} of the "Already safe" files are online-only, so they don't take up space on this disk.` : "";
+  const lead = `If you wiped this PC today, you'd lose <b style="color:${vc(0)}">${size(totals[0])}</b> in ${num(counts[0])} files marked <b>Back up</b>, and <b style="color:${vc(4)}">${size(totals[4])}</b> still needs a look.${cloud}`;
+
+  const groups = D.groups.filter(g => g[2][0] > 0).slice(0, 60);
+  const maxG = Math.max(1, ...groups.map(g => sum(g[2])));
+  const groupRows = groups.map(g => {
+    const [ni, r, sizes, cnt] = g;
+    return `<tr class="click" data-node="${ni}">
+      <td class="path">${esc(pathOf(ni))} <button class="lnk" data-copy="${esc(pathOf(ni))}">copy</button></td>
+      <td class="dim">${esc(reasonText(r) || "Not covered by a folder rule")}</td>
+      <td class="n" style="color:${vc(0)};font-weight:600">${size(sizes[0])}</td>
+      <td class="n">${num(cnt[0])}</td>
+      <td class="barc">${bar(sizes, maxG)}</td></tr>`;
+  }).join("");
+
+  const cats = D.categories.map((name, c) => ({ name, c, sizes: D.catSizes[c], n: sum(D.catCounts[c]) }))
+    .filter(x => x.n > 0).sort((a, b) => sum(b.sizes) - sum(a.sizes));
+  const maxC = cats.length ? sum(cats[0].sizes) : 1;
+  const catRows = cats.map(x => `<tr class="click" data-cat="${x.c}">
+      <td>${esc(x.name)}</td><td class="n">${size(sum(x.sizes))}</td><td class="n">${num(x.n)}</td>
+      <td class="n" style="color:${vc(0)}">${x.sizes[0] ? size(x.sizes[0]) : ""}</td>
+      <td class="barc">${bar(x.sizes, maxC)}</td></tr>`).join("");
+
+  $("#overview").innerHTML = `
+    <div class="cards">${cards}</div>
+    <div class="panel"><p class="lead">${lead}</p>${bar(totals, 0, true)}${legend()}
+      <p class="note">${size(grand)} counted in total. Sizes are file sizes, so Windows hard links can make the system folders look bigger than the disk usage.</p></div>
+    <div class="panel"><h2>Back-up checklist: where your irreplaceable files are</h2>
+      <div class="tw"><table><thead><tr><th>Folder</th><th>Why</th><th class="n">Back up</th><th class="n">Files</th><th class="hide-sm">All verdicts in this folder</th></tr></thead>
+      <tbody>${groupRows || `<tr><td colspan="5" class="dim">Nothing marked Back up.</td></tr>`}</tbody></table></div>
+      <p class="note">Each row is a folder where a rule starts, such as your Desktop or .ssh. Click a row to open it in Folders.</p></div>
+    <div class="panel"><h2>By file type</h2>
+      <div class="tw"><table><thead><tr><th>Type</th><th class="n">Size</th><th class="n">Files</th><th class="n">To back up</th><th class="hide-sm">Verdicts</th></tr></thead>
+      <tbody>${catRows}</tbody></table></div></div>`;
+
+  $("#overview").addEventListener("click", e => {
+    const card = e.target.closest(".card");
+    if (card) { fs.verdicts = new Set([+card.dataset.v]); fs.cat = -1; fs.page = 0; renderFiles(); show("files"); return; }
+    const row = e.target.closest("tr[data-node]");
+    if (row) { openFolder(+row.dataset.node); return; }
+    const cr = e.target.closest("tr[data-cat]");
+    if (cr) { fs.verdicts = new Set(D.verdicts.map((_, v) => v)); fs.cat = +cr.dataset.cat; fs.page = 0; renderFiles(); show("files"); }
+  });
+}
+
+// ---------- folders ----------
+const ff = { node: -1, v: -1 };
+function openFolder(i) { ff.node = i; renderFolders(); show("folders"); }
+function renderFolders() {
+  const cur = ff.node >= 0 ? nodes[ff.node] : null;
+  const pick = s => ff.v < 0 ? sum(s) : s[ff.v];
+  const kids = (cur ? cur.kids.map(k => nodes[k]) : roots).filter(n => pick(n.sizes) > 0 || ff.v < 0).sort((a, b) => pick(b.sizes) - pick(a.sizes));
+  const max = Math.max(1, ...kids.map(n => pick(n.sizes)));
+  const barFor = s => ff.v < 0 ? bar(s, max) : bar(s.map((x, v) => v === ff.v ? x : 0), max);
+
+  let crumbs = `<a data-node="-1">This PC</a>`;
+  if (cur) {
+    const chain = []; for (let i = cur.i; i >= 0; i = nodes[i].parent) chain.unshift(i);
+    crumbs += chain.map(i => ` <span class="dim">›</span> <a data-node="${i}">${esc(nodes[i].name)}</a>`).join("");
+  }
+  const rows = kids.map(n => `<tr class="click" data-node="${n.i}">
+      <td>📁 ${esc(n.name)}${n.reason >= 0 && (!cur || n.reason !== cur.reason) ? `<span class="tag">${esc(D.reasons[n.reason])}</span>` : ""}${n.err ? `<span class="tag">partly unreadable</span>` : ""}</td>
+      <td class="barc">${barFor(n.sizes)}</td>
+      <td class="n">${size(pick(n.sizes))}</td><td class="n">${num(n.count)}</td></tr>`);
+
+  if (cur) {
+    const own = pick(cur.own);
+    if (own > 0 || (ff.v < 0 && cur.ownCount > 0))
+      rows.push(`<tr><td class="dim">📄 Files directly in this folder</td><td class="barc">${barFor(cur.own)}</td><td class="n">${size(own)}</td><td class="n">${num(cur.ownCount)}</td></tr>`);
+    const rest = cur.sizes.map((s, v) => s - cur.own[v] - sum(cur.kids.map(k => nodes[k].sizes[v])));
+    if (pick(rest) > 0)
+      rows.push(`<tr><td class="dim">Smaller folders, not listed one by one</td><td class="barc">${barFor(rest)}</td><td class="n">${size(pick(rest))}</td><td></td></tr>`);
+  }
+
+  let fileHtml = "";
+  if (cur) {
+    const fl = cur.files.filter(f => ff.v < 0 || f.v === ff.v).slice().sort((a, b) => b.size - a.size);
+    const shown = fl.slice(0, 300);
+    const missing = cur.ownCount - cur.files.length;
+    fileHtml = `<div class="panel"><h2>Files in this folder</h2>${shown.length ? `<div class="tw"><table>
+      <thead><tr><th>Name</th><th class="n">Size</th><th class="n hide-sm">Modified</th><th>Type</th><th>Verdict</th></tr></thead><tbody>
+      ${shown.map(f => `<tr><td class="path">${esc(f.name)}${flagTags(f.flags)}</td><td class="n">${size(f.size)}</td><td class="n hide-sm">${day(f.mtime)}</td>
+        <td class="dim">${esc(D.categories[f.cat])}</td><td>${vtag(f.v)} <span class="dim">${esc(D.reasons[f.reason])}</span></td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="dim">No individual files listed for this folder.</p>`}
+      ${missing > 0 ? `<p class="note">${num(missing)} smaller files here aren't included in this report. files.csv lists every file.</p>` : ""}</div>`;
+  }
+
+  $("#folders").innerHTML = `
+    <div class="toolbar"><span class="dim">Show sizes for</span>
+      <select id="fv"><option value="-1">All verdicts</option>${D.verdicts.map((n, v) => `<option value="${v}"${ff.v === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      ${cur ? `<button class="lnk" data-copy="${esc(pathOf(cur.i))}">copy path</button>` : ""}</div>
+    <div class="crumbs">${crumbs}</div>
+    <div class="panel"><div class="tw"><table><thead><tr><th>Folder</th><th class="hide-sm"></th><th class="n">Size</th><th class="n">Files</th></tr></thead>
+      <tbody>${rows.join("") || `<tr><td colspan="4" class="dim">Nothing here for this verdict.</td></tr>`}</tbody></table></div>${legend()}</div>
+    ${fileHtml}`;
+  $("#fv").value = ff.v;
+}
+$("#folders").addEventListener("click", e => {
+  const a = e.target.closest("[data-node]");
+  if (a) { ff.node = +a.dataset.node; renderFolders(); window.scrollTo(0, 0); }
+});
+$("#folders").addEventListener("change", e => { if (e.target.id === "fv") { ff.v = +e.target.value; renderFolders(); } });
+
+// ---------- files ----------
+const fs = { verdicts: new Set(D.verdicts.map((_, v) => v)), cat: -1, q: "", min: 0, sort: "size", page: 0 };
+const PAGE = 100;
+let fullPaths = null;
+function renderFiles() {
+  const box = $("#files");
+  if (!box.dataset.built) {
+    box.dataset.built = 1;
+    box.innerHTML = `
+      <div class="toolbar" id="fchips"></div>
+      <div class="toolbar">
+        <input type="search" id="fq" placeholder="Search name or folder…">
+        <select id="fcat"><option value="-1">All types</option>${D.categories.map((n, c) => `<option value="${c}">${esc(n)}</option>`).join("")}</select>
+        <select id="fmin"><option value="0">Any size</option><option value="1048576">≥ 1 MB</option><option value="10485760">≥ 10 MB</option><option value="104857600">≥ 100 MB</option><option value="1073741824">≥ 1 GB</option></select>
+        <select id="fsort"><option value="size">Largest first</option><option value="new">Newest first</option><option value="old">Oldest first</option><option value="name">Name</option></select>
+      </div>
+      <div class="panel"><div id="fcount" class="dim" style="margin-bottom:8px"></div><div class="tw" id="ftable"></div><div class="pager" id="fpager"></div>
+      <p class="note">This report lists the largest ${num(files.length)} of ${num(m.files)} files, the most important ones of each verdict. ${m.csv ? "files.csv next to this report lists every file and opens in Excel." : ""}</p></div>`;
+    let t;
+    $("#fq").addEventListener("input", e => { clearTimeout(t); t = setTimeout(() => { fs.q = e.target.value.trim().toLowerCase(); fs.page = 0; renderFiles(); }, 150); });
+    $("#fcat").addEventListener("change", e => { fs.cat = +e.target.value; fs.page = 0; renderFiles(); });
+    $("#fmin").addEventListener("change", e => { fs.min = +e.target.value; fs.page = 0; renderFiles(); });
+    $("#fsort").addEventListener("change", e => { fs.sort = e.target.value; fs.page = 0; renderFiles(); });
+    box.addEventListener("click", e => {
+      const c = e.target.closest("[data-chip]");
+      if (c) {
+        const v = +c.dataset.chip;
+        if (fs.verdicts.size === NV) fs.verdicts = new Set([v]);
+        else if (fs.verdicts.has(v)) { fs.verdicts.delete(v); if (!fs.verdicts.size) fs.verdicts = new Set(D.verdicts.map((_, i) => i)); }
+        else fs.verdicts.add(v);
+        fs.page = 0; renderFiles(); return;
+      }
+      const p = e.target.closest("[data-page]");
+      if (p) { fs.page += +p.dataset.page; renderFiles(); window.scrollTo(0, 0); return; }
+      const fo = e.target.closest("[data-folder]");
+      if (fo) openFolder(+fo.dataset.folder);
+    });
+  }
+  $("#fcat").value = fs.cat;
+  $("#fchips").innerHTML = `<span class="dim">Verdict</span>` + D.verdicts.map((n, v) =>
+    `<button class="chip${fs.verdicts.has(v) && fs.verdicts.size < NV ? " on" : ""}" data-chip="${v}" style="${fs.verdicts.has(v) && fs.verdicts.size < NV ? `color:${vc(v)}` : ""}"><span class="dot" style="background:${vc(v)}"></span>${esc(n)}</button>`).join("");
+
+  if (fs.q && !fullPaths) fullPaths = files.map(f => (pathOf(f.node) + sep + f.name).toLowerCase());
+  const idx = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (!fs.verdicts.has(f.v) || (fs.cat >= 0 && f.cat !== fs.cat) || f.size < fs.min) continue;
+    if (fs.q && !fullPaths[i].includes(fs.q)) continue;
+    idx.push(i);
+  }
+  const cmp = { size: (a, b) => files[b].size - files[a].size, new: (a, b) => files[b].mtime - files[a].mtime, old: (a, b) => files[a].mtime - files[b].mtime, name: (a, b) => files[a].name.localeCompare(files[b].name) }[fs.sort];
+  idx.sort(cmp);
+  const pages = Math.max(1, Math.ceil(idx.length / PAGE));
+  fs.page = Math.min(Math.max(0, fs.page), pages - 1);
+  const slice = idx.slice(fs.page * PAGE, fs.page * PAGE + PAGE);
+  const totalSize = idx.reduce((s, i) => s + files[i].size, 0);
+  $("#fcount").textContent = `${num(idx.length)} files · ${size(totalSize)}`;
+  $("#ftable").innerHTML = `<table><thead><tr><th>Name</th><th class="hide-sm">Folder</th><th class="n">Size</th><th class="n hide-sm">Modified</th><th>Verdict</th></tr></thead><tbody>
+    ${slice.map(i => { const f = files[i]; const dir = pathOf(f.node); return `<tr>
+      <td class="path">${esc(f.name)}${flagTags(f.flags)}<div class="dim" style="font-size:12px">${esc(D.categories[f.cat])}</div></td>
+      <td class="path hide-sm"><a class="dim" style="cursor:pointer" data-folder="${f.node}">${esc(dir)}</a> <button class="lnk" data-copy="${esc(dir + sep + f.name)}">copy</button></td>
+      <td class="n">${size(f.size)}</td><td class="n hide-sm">${day(f.mtime)}</td>
+      <td>${vtag(f.v)}<div class="dim" style="font-size:12px">${esc(D.reasons[f.reason])}</div></td></tr>`; }).join("")}
+    </tbody></table>`;
+  $("#fpager").innerHTML = pages > 1 ? `<button class="lnk" data-page="-1" ${fs.page === 0 ? "disabled" : ""}>‹ Prev</button> page ${fs.page + 1} of ${pages} <button class="lnk" data-page="1" ${fs.page >= pages - 1 ? "disabled" : ""}>Next ›</button>` : "";
+}
+
+// ---------- problems ----------
+function renderProblems() {
+  const errs = D.errors || [];
+  const odd = errs.filter(e => !e[2]), expected = errs.filter(e => e[2]);
+  const table = list => `<div class="tw"><table><thead><tr><th style="width:45%">Path</th><th>Error</th></tr></thead><tbody>
+    ${list.map(([p, e]) => `<tr><td class="path">${esc(p)}</td><td class="dim path">${esc(e.replace("open " + p + ": ", ""))}</td></tr>`).join("")}</tbody></table></div>`;
+  $("#problems").innerHTML = `
+    <div class="panel"><h2>Couldn't read: worth a look (${num(odd.length)})</h2>
+      <p class="note" style="margin:0 0 10px">These places couldn't be read and aren't known system folders. Anything inside is missing from the totals. Running pcaudit as administrator usually gets in.</p>
+      ${odd.length ? table(odd) : `<p class="dim">Nothing. Every folder outside protected system areas was readable.</p>`}</div>
+    <div class="panel"><h2>Couldn't read: protected system folders (${num(expected.length)})</h2>
+      <p class="note" style="margin:0 0 10px">Windows keeps these locked, such as the Recycle Bin, System Volume Information and WindowsApps. Your own files don't live here.</p>
+      ${expected.length ? `<details><summary class="dim" style="cursor:pointer">Show list</summary>${table(expected)}</details>` : ""}
+      ${m.errors > errs.length ? `<p class="note">${num(m.errors)} problems in total. Only the first ${num(errs.length)} are listed.</p>` : ""}</div>
+    <div class="panel"><h2>Links not followed (${num(m.links)})</h2>
+      <p class="note" style="margin:0">Junctions and symbolic links point somewhere else. They aren't followed, so nothing is counted twice and the scan can't loop.</p></div>`;
+}
+
+// ---------- about ----------
+function renderAbout() {
+  $("#about").innerHTML = `<div class="panel"><h2>What the verdicts mean</h2><dl class="verdicts">
+    ${D.verdicts.map((n, v) => `<dt><span class="dot" style="background:${vc(v)}"></span>${esc(n)}</dt><dd>${VDESC[v]}</dd>`).join("")}</dl></div>
+    <div class="panel"><h2>How files are sorted</h2>
+      <p>First comes the <b>folder</b>. Known places decide a lot: <i>Program Files</i> and <i>Windows</i> are reinstallable, caches and <i>Temp</i> are junk, <i>.ssh</i> and editor settings get backed up, and OneDrive is already safe. Then comes the <b>file type</b>. Inside your own folders, documents, photos and videos get backed up, and installers count as reinstallable.</p>
+      <p>A file in a sync folder only counts as <b>Already safe</b> when Windows marks it as managed by the sync client. If a OneDrive file has no sync markers, it's put under Review.</p>
+      <p>Source code is marked Review for now. A later version checks whether each git repository has unpushed work.</p>
+      <p class="note">Nothing was uploaded anywhere. The tool only read folder listings and file details, never file contents. The report contains your file names, so keep it private.</p></div>`;
+}
+
+renderOverview(); renderFolders(); renderFiles(); renderProblems(); renderAbout();
+</script>
+</body>
+</html>

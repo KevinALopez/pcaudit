@@ -1,0 +1,9 @@
+# Build output
+/pcaudit
+/pcaudit.exe
+/dist/
+
+# Scan results contain your file names. Never commit them.
+/out/
+/pcaudit-*/
+*.log
