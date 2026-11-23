@@ -83,7 +83,10 @@ type Batch struct {
 
 type Stats struct {
 	Files, Dirs, Bytes, Errors, Links int64
-	Current                           string
+	// DiskErrors counts reads the drive itself failed (bad blocks, device
+	// errors). After the first one the scan continues with a single reader.
+	DiskErrors int64
+	Current    string
 }
 
 // ErrEntry is something that couldn't be read. Expected means it's in a
@@ -91,7 +94,12 @@ type Stats struct {
 type ErrEntry struct {
 	Path, Msg string
 	Expected  bool
+	Disk      bool // the drive failed the read: this data may be damaged
 }
+
+// IsDiskError reports whether err means the drive itself failed a read, as
+// opposed to "access denied" or "not found".
+func IsDiskError(err error) bool { return isDeviceError(err) }
 
 type Options struct {
 	Roots      []string
@@ -148,9 +156,14 @@ type scanner struct {
 	queue   []job
 	pending int
 
-	files, dirs, bytes, nerr, links atomic.Int64
-	current                         atomic.Value
-	batches                         chan Batch
+	files, dirs, bytes, nerr, links, diskErrs atomic.Int64
+	current                                   atomic.Value
+	batches                                   chan Batch
+
+	// After a disk error every worker takes this lock, so only one folder
+	// is read at a time from then on.
+	gentle atomic.Bool
+	serial sync.Mutex
 }
 
 // Run scans all roots and returns the folder tree with per-verdict totals.
@@ -212,7 +225,13 @@ func Run(opt Options) *Result {
 				if !ok {
 					return
 				}
-				s.process(j)
+				if s.gentle.Load() {
+					s.serial.Lock()
+					s.process(j)
+					s.serial.Unlock()
+				} else {
+					s.process(j)
+				}
 				s.done()
 			}
 		}()
@@ -236,7 +255,7 @@ func Run(opt Options) *Result {
 func (s *scanner) stats() Stats {
 	return Stats{
 		Files: s.files.Load(), Dirs: s.dirs.Load(), Bytes: s.bytes.Load(),
-		Errors: s.nerr.Load(), Links: s.links.Load(), Current: s.current.Load().(string),
+		Errors: s.nerr.Load(), Links: s.links.Load(), DiskErrors: s.diskErrs.Load(), Current: s.current.Load().(string),
 	}
 }
 
@@ -276,6 +295,16 @@ func (s *scanner) done() {
 
 func (s *scanner) addErr(path string, err error) {
 	s.nerr.Add(1)
+	if isDeviceError(err) {
+		s.diskErrs.Add(1)
+		s.gentle.Store(true)
+		s.mu.Lock()
+		if len(s.errs) < maxErrors {
+			s.errs = append(s.errs, ErrEntry{Path: path, Msg: err.Error(), Disk: true})
+		}
+		s.mu.Unlock()
+		return
+	}
 	expected := false
 	if r := s.cls.DirRule(path); r >= 0 {
 		v := s.cls.Rule(r).V
@@ -290,7 +319,7 @@ func (s *scanner) addErr(path string, err error) {
 	}
 	s.mu.Lock()
 	if len(s.errs) < maxErrors {
-		s.errs = append(s.errs, ErrEntry{path, err.Error(), expected})
+		s.errs = append(s.errs, ErrEntry{Path: path, Msg: err.Error(), Expected: expected})
 	}
 	s.mu.Unlock()
 }

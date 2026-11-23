@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
@@ -49,6 +51,20 @@ func workDir(t *testing.T) string {
 		os.RemoveAll(dir)
 	})
 	return dir
+}
+
+func TestIsDiskError(t *testing.T) {
+	if IsDiskError(os.ErrNotExist) || IsDiskError(os.ErrPermission) || IsDiskError(nil) {
+		t.Error("missing or locked files aren't disk errors")
+	}
+	if runtime.GOOS == "windows" {
+		crc := &os.PathError{Op: "read", Path: `C:\x`, Err: syscall.Errno(23)} // ERROR_CRC, a bad block
+		if !IsDiskError(crc) {
+			t.Error("ERROR_CRC should count as a disk error")
+		}
+	} else if !IsDiskError(&os.PathError{Op: "read", Path: "/x", Err: syscall.EIO}) {
+		t.Error("EIO should count as a disk error")
+	}
 }
 
 func TestGitVerdicts(t *testing.T) {

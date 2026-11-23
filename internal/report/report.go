@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
+	"github.com/KevinALopez/pcaudit/internal/diskhealth"
 	"github.com/KevinALopez/pcaudit/internal/dupes"
 	"github.com/KevinALopez/pcaudit/internal/gitrepo"
+	"github.com/KevinALopez/pcaudit/internal/programs"
 	"github.com/KevinALopez/pcaudit/internal/scan"
 )
 
@@ -45,6 +47,22 @@ type Meta struct {
 	GitChecked   bool   `json:"gitChecked"`
 	DupesChecked bool   `json:"dupesChecked"`
 	DupeMinSize  int64  `json:"dupeMinSize"`
+
+	Readers    int                `json:"readers"`
+	SafetyNote string             `json:"safetyNote,omitempty"`
+	DiskErrors int64              `json:"diskErrors"`
+	Health     *diskhealth.Report `json:"health,omitempty"`
+
+	ProgramsChecked bool   `json:"programsChecked"`
+	WingetFile      string `json:"wingetFile,omitempty"` // file name next to the report
+	WingetPackages  int    `json:"wingetPackages"`
+	WingetError     string `json:"wingetError,omitempty"`
+}
+
+// Extras are the results gathered besides the file scan.
+type Extras struct {
+	Dupes    []dupes.Group
+	Programs []programs.Program
 }
 
 // maxDupeGroups caps how many duplicate sets the report lists.
@@ -60,14 +78,16 @@ type payload struct {
 	Nodes      [][]any   `json:"nodes"`     // parent, name, totalCount, [sizes per verdict], [own sizes per verdict], ownCount, reason, err
 	Files      [][]any   `json:"files"`     // node, name, size, mtime, category, verdict, reason, flags
 	Groups     [][]any   `json:"groups"`    // node, reason, [sizes per verdict], [counts per verdict]
-	Errors     [][]any   `json:"errors"`    // path, message, expected (0/1); unexpected ones first
+	Errors     [][]any   `json:"errors"`    // path, message, kind (0 worth a look, 1 expected, 2 disk failure)
 	Repos      [][]any   `json:"repos"`     // node, remote, branch, changed, untracked, headUnpushed, allUnpushed, stashes, error, [sizes per verdict]
 	Dupes      [][]any   `json:"dupes"`     // size, [[node, name], ...]
+	Programs   [][]any   `json:"programs"`  // name, version, publisher, installed, sizeKB, location, scope, kind, winget
 }
 
 // Write produces report.html and summary.json in outDir. It returns the
 // report path.
-func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *classify.Classifier, dupeGroups []dupes.Group) (string, error) {
+func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *classify.Classifier, ex Extras) (string, error) {
+	dupeGroups := ex.Dupes
 	nodes := res.Nodes
 	files := col.Embedded()
 	sort.Slice(files, func(i, j int) bool { return files[i].Size > files[j].Size })
@@ -202,14 +222,27 @@ func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *clas
 		p.CatSizes = append(p.CatSizes, col.CatAgg[c].Size[:])
 		p.CatCounts = append(p.CatCounts, col.CatAgg[c].Count[:])
 	}
+	// Disk errors first, then unexpected ones, then the usual protected folders.
 	errs := append([]scan.ErrEntry(nil), res.ErrList...)
-	sort.SliceStable(errs, func(i, j int) bool { return !errs[i].Expected && errs[j].Expected })
-	for _, e := range errs {
-		exp := 0
-		if e.Expected {
-			exp = 1
+	rank := func(e scan.ErrEntry) int {
+		switch {
+		case e.Disk:
+			return 0
+		case !e.Expected:
+			return 1
 		}
-		p.Errors = append(p.Errors, []any{e.Path, e.Msg, exp})
+		return 2
+	}
+	sort.SliceStable(errs, func(i, j int) bool { return rank(errs[i]) < rank(errs[j]) })
+	for _, e := range errs {
+		kind := 0 // 0 = worth a look, 1 = expected, 2 = the drive failed
+		if e.Expected {
+			kind = 1
+		}
+		if e.Disk {
+			kind = 2
+		}
+		p.Errors = append(p.Errors, []any{e.Path, e.Msg, kind})
 	}
 
 	repos := sortedRepos(res)
@@ -226,6 +259,10 @@ func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *clas
 		p.Dupes = append(p.Dupes, []any{g.Size, list})
 	}
 
+	for _, pr := range ex.Programs {
+		p.Programs = append(p.Programs, []any{pr.Name, pr.Version, pr.Publisher, pr.Installed, pr.SizeKB, pr.Location, pr.Scope, pr.Kind, pr.Winget})
+	}
+
 	meta.Embedded = len(p.Files)
 	meta.KeptNodes = len(p.Nodes)
 	p.Meta = meta
@@ -240,8 +277,13 @@ func Write(outDir string, meta Meta, res *scan.Result, col *Collector, cls *clas
 		return "", err
 	}
 
-	if err := writeSummary(outDir, meta, nodes, groups, col, cls, repos, dupeGroups); err != nil {
+	if err := writeSummary(outDir, meta, nodes, groups, col, cls, repos, dupeGroups, ex.Programs); err != nil {
 		return "", err
+	}
+	if len(ex.Programs) > 0 {
+		if err := writeProgramsCSV(filepath.Join(outDir, "programs.csv"), ex.Programs); err != nil {
+			return "", err
+		}
 	}
 	return reportPath, nil
 }
@@ -335,7 +377,7 @@ func totals(a scan.Agg) []verdictTotal {
 	return out
 }
 
-func writeSummary(outDir string, meta Meta, nodes []scan.Node, groups []*groupOut, col *Collector, cls *classify.Classifier, repos []scan.Repo, dupeGroups []dupes.Group) error {
+func writeSummary(outDir string, meta Meta, nodes []scan.Node, groups []*groupOut, col *Collector, cls *classify.Classifier, repos []scan.Repo, dupeGroups []dupes.Group, progs []programs.Program) error {
 	var all scan.Agg
 	for i := range nodes {
 		if nodes[i].Parent < 0 {
@@ -352,14 +394,15 @@ func writeSummary(outDir string, meta Meta, nodes []scan.Node, groups []*groupOu
 		Totals   []verdictTotal `json:"totals"`
 	}
 	out := struct {
-		Meta       Meta           `json:"meta"`
-		Generated  string         `json:"generated"`
-		Totals     []verdictTotal `json:"totals"`
-		Categories []category     `json:"categories"`
-		Groups     []group        `json:"groups"`
-		Repos      []repo         `json:"repos"`
-		Duplicates []dupe         `json:"duplicates"`
-	}{Meta: meta, Generated: time.Now().Format(time.RFC3339), Totals: totals(all)}
+		Meta       Meta               `json:"meta"`
+		Generated  string             `json:"generated"`
+		Totals     []verdictTotal     `json:"totals"`
+		Categories []category         `json:"categories"`
+		Groups     []group            `json:"groups"`
+		Repos      []repo             `json:"repos"`
+		Duplicates []dupe             `json:"duplicates"`
+		Programs   []programs.Program `json:"programs"`
+	}{Meta: meta, Generated: time.Now().Format(time.RFC3339), Totals: totals(all), Programs: progs}
 
 	for _, r := range repos {
 		out.Repos = append(out.Repos, repo{r.Status, r.Status.Clean()})

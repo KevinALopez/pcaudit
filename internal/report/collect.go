@@ -14,6 +14,7 @@ import (
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
 	"github.com/KevinALopez/pcaudit/internal/dupes"
+	"github.com/KevinALopez/pcaudit/internal/programs"
 	"github.com/KevinALopez/pcaudit/internal/scan"
 )
 
@@ -64,6 +65,23 @@ func NewCollector(csvPath string) (*Collector, error) {
 		c.csv.Write([]string{"path", "size_bytes", "size_on_disk", "modified", "category", "verdict", "reason", "hidden", "cloud_synced", "cloud_only", "link"})
 	}
 	return c, nil
+}
+
+// writeProgramsCSV writes the installed programs as a reinstall checklist.
+func writeProgramsCSV(path string, progs []programs.Program) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	f.WriteString("\xEF\xBB\xBF")
+	w := csv.NewWriter(f)
+	w.Write([]string{"name", "version", "publisher", "installed", "kind", "on_winget", "scope", "location"})
+	for _, p := range progs {
+		w.Write([]string{p.Name, p.Version, p.Publisher, p.Installed, p.Kind, p.Winget, p.Scope, p.Location})
+	}
+	w.Flush()
+	return w.Error()
 }
 
 // appInternal is true for app data folders. Apps keep their own copies of

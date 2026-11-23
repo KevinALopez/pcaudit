@@ -26,6 +26,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 header { padding: 20px 24px 0; max-width: 1200px; margin: 0 auto; }
 h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
@@ -34,7 +35,7 @@ h2 { font-size: 16px; margin: 0 0 12px; }
 nav { display: flex; gap: 4px; margin-top: 16px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 nav button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 12px; font: inherit; cursor: pointer; white-space: nowrap; }
 nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 60px; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 100px; }
 section { display: none; }
 section.on { display: block; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
@@ -85,6 +86,20 @@ ul.alerts a { color: inherit; cursor: pointer; text-decoration: underline; text-
 .dupe ul { margin: 6px 0 0; padding-left: 18px; }
 .dupe li { margin: 2px 0; }
 .dupe a { cursor: pointer; text-decoration: none; }
+td.cb, th.cb { width: 28px; padding-right: 0; }
+input.sel { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); vertical-align: middle; }
+#selbar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 10; display: flex; gap: 12px; align-items: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.18); max-width: calc(100% - 32px); flex-wrap: wrap; }
+#selbar[hidden] { display: none; }
+button.primary { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 7px 14px; background: var(--accent); color: #fff; cursor: pointer; }
+button.primary:hover { filter: brightness(1.08); }
+.field { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+.field input[type=text] { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text); max-width: 420px; }
+.steps { margin: 8px 0 0; padding-left: 20px; }
+.steps li { margin: 4px 0; }
+tr.covered td { opacity: .5; }
+.panel.danger { border-color: var(--v0); border-width: 2px; }
+.panel.danger h2 { color: var(--v0); }
 code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: var(--chip); padding: 1px 5px; border-radius: 4px; }
 @media (max-width: 640px) {
   header, main { padding-left: 16px; padding-right: 16px; }
@@ -104,6 +119,8 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; backgrou
     <button data-tab="files">Files</button>
     <button data-tab="repos">Git repos</button>
     <button data-tab="dupes">Duplicates</button>
+    <button data-tab="programs">Programs</button>
+    <button data-tab="backup">Backup script <span id="selcount" class="tag" hidden></span></button>
     <button data-tab="problems">Problems</button>
     <button data-tab="about">How to read this</button>
   </nav>
@@ -114,9 +131,12 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; backgrou
   <section id="files"></section>
   <section id="repos"></section>
   <section id="dupes"></section>
+  <section id="programs"></section>
+  <section id="backup"></section>
   <section id="problems"></section>
   <section id="about"></section>
 </main>
+<div id="selbar" hidden></div>
 <script id="data" type="application/json">__PCAUDIT_DATA__</script>
 <script>
 "use strict";
@@ -151,7 +171,7 @@ const legend = () => `<div class="legend">${D.verdicts.map((n, v) => `<span><spa
 // ---------- data ----------
 const nodes = D.nodes.map((n, i) => ({ i, parent: n[0], name: n[1], count: n[2], sizes: n[3], own: n[4], ownCount: n[5], reason: n[6], err: n[7], kids: [], files: [] }));
 for (const n of nodes) { n.size = sum(n.sizes); if (n.parent >= 0) nodes[n.parent].kids.push(n.i); }
-const files = D.files.map(f => ({ node: f[0], name: f[1], size: f[2], mtime: f[3], cat: f[4], v: f[5], reason: f[6], flags: f[7] }));
+const files = D.files.map((f, i) => ({ i, node: f[0], name: f[1], size: f[2], mtime: f[3], cat: f[4], v: f[5], reason: f[6], flags: f[7] }));
 for (const f of files) if (f.node >= 0) nodes[f.node].files.push(f);
 const roots = nodes.filter(n => n.parent < 0);
 const totals = Array(NV).fill(0), counts = Array(NV).fill(0);
@@ -216,6 +236,211 @@ const dupePairs = (() => {
   }
   return [...pairs.values()].sort((x, y) => y.bytes - x.bytes);
 })();
+
+// ---------- selection for the backup script ----------
+// Keys are "d:<folder index>" or "f:<file index>". The selection is kept in
+// this browser for this report only, so a reload doesn't lose it.
+const selStore = `pcaudit-sel-${D.meta.host}-${D.meta.started}`;
+const sel = new Set();
+try { for (const k of JSON.parse(localStorage.getItem(selStore) || "[]")) sel.add(k); } catch {}
+const selBox = key => `<input type="checkbox" class="sel" data-key="${key}"${sel.has(key) ? " checked" : ""} title="Include in the backup script">`;
+function selItem(key) {
+  const [kind, id] = [key[0], +key.slice(2)];
+  if (kind === "d" && nodes[id]) return { key, kind, node: id, path: pathOf(id), size: nodes[id].size, count: nodes[id].count };
+  if (kind === "f" && files[id]) { const f = files[id]; return { key, kind, node: f.node, file: f, path: pathOf(f.node) + sep + f.name, size: f.size, count: 1 }; }
+  return null;
+}
+// selItems marks entries already inside another selected folder as covered.
+function selItems() {
+  const items = [...sel].map(selItem).filter(Boolean);
+  const dirs = items.filter(x => x.kind === "d");
+  for (const x of items)
+    x.covered = x.kind === "d" ? dirs.some(d => d.node !== x.node && isUnder(x.node, d.node)) : dirs.some(d => isUnder(x.node, d.node));
+  return items.sort((a, b) => a.path.localeCompare(b.path));
+}
+function selChanged() {
+  try { localStorage.setItem(selStore, JSON.stringify([...sel])); } catch {}
+  for (const c of document.querySelectorAll("input.sel")) c.checked = sel.has(c.dataset.key);
+  const items = selItems().filter(x => !x.covered);
+  const total = sum(items.map(x => x.size));
+  const bar = $("#selbar"), count = $("#selcount");
+  bar.hidden = items.length === 0;
+  count.hidden = items.length === 0;
+  count.textContent = items.length;
+  const nd = items.filter(x => x.kind === "d").length, nf = items.length - nd;
+  bar.innerHTML = `<span><b>${[nd && `${num(nd)} folder${nd > 1 ? "s" : ""}`, nf && `${num(nf)} file${nf > 1 ? "s" : ""}`].filter(Boolean).join(", ")}</b> selected · up to ${size(total)}</span>
+    <button class="primary" data-goto-backup>Make backup script</button><button class="lnk" data-clear>Clear</button>`;
+  if ($("#backup").classList.contains("on")) renderBackup();
+}
+document.addEventListener("change", e => {
+  const c = e.target.closest("input.sel");
+  if (!c) return;
+  c.checked ? sel.add(c.dataset.key) : sel.delete(c.dataset.key);
+  selChanged();
+});
+$("#selbar").addEventListener("click", e => {
+  if (e.target.closest("[data-goto-backup]")) { renderBackup(); show("backup"); }
+  if (e.target.closest("[data-clear]")) { sel.clear(); selChanged(); }
+});
+
+// ---------- backup script (.cmd using robocopy, built into Windows) ----------
+const SKIP_DIRS = ["node_modules", ".venv", "venv", "__pycache__", ".cache", "Cache", "Code Cache", "GPUCache", ".next", ".gradle", "$RECYCLE.BIN", "System Volume Information"];
+const cmdQuote = p => '"' + p.replace(/%/g, "%%") + '"';            // inside quotes only % is special
+const cmdEcho = s => s.replace(/\^/g, "^^").replace(/([&|<>])/g, "^$1").replace(/%/g, "%%");
+const srcArg = p => cmdQuote(p.endsWith("\\") ? p + "." : p);       // "C:\" would escape the quote
+const mirror = p => p.replace(/^([A-Za-z]):\\?/, "$1\\").replace(/\\+$/, "");
+const destArg = p => '"%DEST%\\' + mirror(p).replace(/%/g, "%%") + '"';
+
+function buildScript(items, dest, skipDeps) {
+  const L = [];
+  const live = items.filter(x => !x.covered);
+  const dirs = live.filter(x => x.kind === "d");
+  const fileGroups = new Map();
+  for (const x of live.filter(x => x.kind === "f")) {
+    const dir = pathOf(x.node);
+    if (!fileGroups.has(dir)) fileGroups.set(dir, []);
+    fileGroups.get(dir).push(x.file.name);
+  }
+  const steps = dirs.length + fileGroups.size;
+  const common = "/COPY:DAT /DCOPY:T /R:1 /W:1 /XJ /NP /NDL /TEE /LOG+:\"%LOG%\"";
+  const xd = skipDeps ? " /XD " + SKIP_DIRS.map(cmdQuote).join(" ") : "";
+  L.push("@echo off", "chcp 65001 >nul", "setlocal",
+    `rem Backup script made by pcaudit ${m.version} for ${m.host} on ${new Date().toISOString().slice(0, 10)}.`,
+    "rem It only COPIES with robocopy. Nothing on this PC is changed or deleted.",
+    "rem Running it again resumes: files that were already copied are skipped.",
+    "rem Change DEST to copy somewhere else.",
+    `set "DEST=${dest.replace(/%/g, "%%").replace(/"/g, "")}"`,
+    "",
+    `echo This copies ${steps} item${steps === 1 ? "" : "s"} (up to ${cmdEcho(size(sum(live.map(x => x.size))))}) to:`,
+    "echo   %DEST%",
+    "echo The folder structure is kept, so C:\\Users\\you\\Documents ends up in %DEST%\\C\\Users\\you\\Documents.",
+    "echo.",
+    "echo Press any key to start, or close this window to cancel.",
+    "pause >nul",
+    'if not exist "%DEST%" mkdir "%DEST%"',
+    'if not exist "%DEST%" (echo Can not create the destination folder. & pause & exit /b 1)',
+    'set "LOG=%DEST%\\pcaudit-backup.log"',
+    "set FAILED=0", "");
+  let n = 0;
+  for (const d of dirs) {
+    n++;
+    L.push(`echo [${n}/${steps}] ${cmdEcho(d.path)}`,
+      `robocopy ${srcArg(d.path)} ${destArg(d.path)} /E ${common}${xd}`,
+      "if errorlevel 8 set FAILED=1", "");
+  }
+  for (const [dir, names] of fileGroups) {
+    n++;
+    // Keep each line well under cmd's 8191-character limit.
+    const chunks = [[]];
+    let len = 0;
+    for (const name of names) {
+      if (len > 6000) { chunks.push([]); len = 0; }
+      chunks[chunks.length - 1].push(name);
+      len += name.length + 3;
+    }
+    L.push(`echo [${n}/${steps}] ${cmdEcho(dir)} (${names.length} file${names.length > 1 ? "s" : ""})`);
+    for (const c of chunks)
+      L.push(`robocopy ${srcArg(dir)} ${destArg(dir)} ${c.map(cmdQuote).join(" ")} ${common}`, "if errorlevel 8 set FAILED=1");
+    L.push("");
+  }
+  L.push("echo.", 'if "%FAILED%"=="1" goto failed',
+    "echo Done. Everything was copied to %DEST%", "goto end",
+    ":failed", "echo Some files could not be copied. The log lists them: %LOG%",
+    ":end", "echo.", "pause");
+  return L.join("\r\n") + "\r\n";
+}
+function download(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: "application/octet-stream" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.append(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+}
+
+let backupDest = "E:\\pcaudit-backup", backupSkip = true;
+try { backupDest = localStorage.getItem("pcaudit-dest") || backupDest; } catch {}
+function renderBackup() {
+  const items = selItems();
+  const live = items.filter(x => !x.covered);
+  const box = $("#backup");
+  const windows = (m.os || "").startsWith("windows");
+  const rows = items.map(x => `<tr class="${x.covered ? "covered" : ""}">
+      <td class="cb">${selBox(x.key)}</td>
+      <td class="path">${x.kind === "d" ? "📁" : "📄"} ${esc(x.path)}${x.covered ? `<span class="tag">already inside a selected folder</span>` : ""}</td>
+      <td class="n">${size(x.size)}</td><td class="n hide-sm">${num(x.count)}</td></tr>`).join("");
+  box.innerHTML = `
+    <div class="panel"><h2>Backup script</h2>
+      <p style="margin-top:0">Tick folders and files anywhere in this report: in the back-up checklist, in Folders or in Files. pcaudit then writes a script that copies them to another drive with <b>robocopy</b>, which is built into Windows. The script only copies. Nothing on this PC is moved or deleted.</p>
+      ${items.length ? "" : `<p class="dim">Nothing selected yet. <button class="lnk" data-pick-checklist>Select every folder in the back-up checklist</button></p>`}
+    </div>
+    ${items.length ? `<div class="panel"><h2>Selected (${num(live.length)}, up to ${size(sum(live.map(x => x.size)))})</h2>
+      <div class="tw"><table><thead><tr><th class="cb"></th><th>Path</th><th class="n">Size</th><th class="n hide-sm">Files</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="note">Folder sizes include everything inside, junk too. With the option below, dependency and cache folders are skipped while copying.</p></div>
+    <div class="panel"><h2>Make the script</h2>
+      ${windows ? "" : `<p class="dim">This report comes from ${esc(m.os)}. The script uses Windows robocopy, so run it on Windows.</p>`}
+      <label class="field"><span>Copy to (an external drive or another disk)</span><input type="text" id="bdest" value="${esc(backupDest)}" spellcheck="false"></label>
+      <label><input type="checkbox" id="bskip"${backupSkip ? " checked" : ""}> Skip dependency and cache folders inside the selection (${esc(SKIP_DIRS.slice(0, 6).join(", "))}…)</label>
+      <div class="toolbar" style="margin-top:14px"><button class="primary" id="bdl">Download pcaudit-backup.cmd</button><button class="lnk" id="blist">Download the list as .txt</button></div>
+      <ol class="steps">
+        <li>Plug in the backup drive and check its letter in File Explorer. Change the folder above if it isn't right.</li>
+        <li>Double-click <code>pcaudit-backup.cmd</code>. It shows where it will copy to and waits for a key press.</li>
+        <li>When it's done, the log is in <code>pcaudit-backup.log</code> on the backup drive. Running it again resumes and skips files that were already copied.</li>
+      </ol>
+      <p class="note">Windows may warn about a downloaded script: choose <b>More info → Run anyway</b>. You can open the .cmd in Notepad first to see exactly what it does.</p></div>` : ""}`;
+}
+$("#backup").addEventListener("click", e => {
+  if (e.target.closest("[data-pick-checklist]")) {
+    D.groups.filter(g => g[2][0] > 0).slice(0, 60).forEach(g => sel.add("d:" + g[0]));
+    selChanged(); renderBackup(); return;
+  }
+  if (e.target.id === "bdl") {
+    download("pcaudit-backup.cmd", buildScript(selItems(), backupDest, backupSkip));
+  }
+  if (e.target.id === "blist") {
+    const items = selItems().filter(x => !x.covered);
+    download("pcaudit-backup-list.txt", items.map(x => x.path).join("\r\n") + "\r\n");
+  }
+});
+$("#backup").addEventListener("input", e => {
+  if (e.target.id === "bdest") { backupDest = e.target.value.trim(); try { localStorage.setItem("pcaudit-dest", backupDest); } catch {} }
+});
+$("#backup").addEventListener("change", e => { if (e.target.id === "bskip") backupSkip = e.target.checked; });
+
+// ---------- programs ----------
+const progs = (D.programs || []).map(p => ({ name: p[0], version: p[1], publisher: p[2], installed: p[3], sizeKB: p[4], location: p[5], scope: p[6], kind: p[7], winget: p[8] }));
+const how = p => p.kind === "Game" ? { t: "Its game launcher", c: 2 } : p.winget === "yes" ? { t: "winget import", c: 1 } : p.winget === "no" ? { t: "By hand", c: 0 } : { t: "", c: 4 };
+const pf = { show: "all", q: "" };
+function renderPrograms() {
+  const box = $("#programs");
+  if (!m.programsChecked) { box.innerHTML = `<div class="panel"><h2>Installed programs</h2><p class="dim">Programs weren't listed (-no-programs).</p></div>`; return; }
+  if (!progs.length) { box.innerHTML = `<div class="panel"><h2>Installed programs</h2><p class="dim">No installed programs were found. Listing them is Windows-only for now.</p></div>`; return; }
+  const games = progs.filter(p => p.kind === "Game"), manual = progs.filter(p => p.kind !== "Game" && p.winget === "no");
+  const list = progs.filter(p => {
+    if (pf.show === "manual" && !(p.kind !== "Game" && p.winget === "no")) return false;
+    if (pf.show === "winget" && !(p.kind !== "Game" && p.winget === "yes")) return false;
+    if (pf.show === "games" && p.kind !== "Game") return false;
+    return !pf.q || (p.name + " " + p.publisher).toLowerCase().includes(pf.q);
+  });
+  const chip = (k, label) => `<button class="chip${pf.show === k ? " on" : ""}" data-pshow="${k}">${label}</button>`;
+  const cmd = m.wingetFile ? `winget import -i ${m.wingetFile}` : "";
+  box.innerHTML = `
+    <div class="panel"><h2>Installed programs (${num(progs.length)})</h2>
+      ${m.wingetFile ? `<p class="lead"><b>${num(m.wingetPackages)}</b> of them are in <code>${esc(m.wingetFile)}</code>, next to this report. After the reset, reinstall them all at once with:</p>
+        <p><code>${esc(cmd)}</code> <button class="lnk" data-copy="${esc(cmd)}">copy</button></p>` : ""}
+      ${m.wingetError ? `<p class="dim">The winget export didn't work: ${esc(m.wingetError)}</p>` : ""}
+      <p class="note">${num(manual.length)} programs aren't in the winget list. winget couldn't match them to a package (beta channels, per-user installs, drivers, company tools), so reinstall them by hand. Some can still be found with <code>winget search</code>. ${num(games.length)} games come back through their launcher.</p></div>
+    <div class="toolbar">${chip("all", "All")}${chip("manual", `By hand (${manual.length})`)}${chip("winget", "In the winget list")}${chip("games", `Games (${games.length})`)}
+      <input type="search" id="pq" placeholder="Search programs…" value="${esc(pf.q)}"></div>
+    <div class="panel"><div class="tw"><table><thead><tr><th>Program</th><th class="hide-sm">Version</th><th class="n hide-sm">Installed</th><th>Reinstall with</th></tr></thead><tbody>
+      ${list.map(p => { const h = how(p); return `<tr><td>${esc(p.name)}<div class="dim" style="font-size:12px">${esc(p.publisher)}${p.scope === "Current user" ? " · only for your user" : ""}</div></td>
+        <td class="dim hide-sm">${esc(p.version)}</td><td class="n hide-sm">${esc(p.installed)}</td>
+        <td>${h.t ? `<span class="vt" style="background:${vc(h.c)}">${esc(h.t)}</span>` : ""}</td></tr>`; }).join("")}
+      </tbody></table></div>
+      <p class="note">programs.csv next to this report has the same list for Excel.</p></div>`;
+  const q = $("#pq");
+  if (pf.focus) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); pf.focus = false; }
+}
+$("#programs").addEventListener("click", e => { const c = e.target.closest("[data-pshow]"); if (c) { pf.show = c.dataset.pshow; renderPrograms(); } });
+$("#programs").addEventListener("input", e => { if (e.target.id === "pq") { pf.q = e.target.value.trim().toLowerCase(); pf.focus = true; renderPrograms(); } });
 const flagTags = f => FLAGS.filter(([b]) => f & b && !(b === 16 && f & 1)).map(([, t]) => `<span class="tag">${t}</span>`).join("");
 
 async function copy(text, btn) {
@@ -269,6 +494,7 @@ function renderOverview() {
   const groupRows = groups.map(g => {
     const [ni, r, sizes, cnt] = g;
     return `<tr class="click" data-node="${ni}">
+      <td class="cb">${selBox("d:" + ni)}</td>
       <td class="path">${esc(pathOf(ni))} <button class="lnk" data-copy="${esc(pathOf(ni))}">copy</button></td>
       <td class="dim">${esc(reasonText(r) || "Not covered by a folder rule")}</td>
       <td class="n" style="color:${vc(0)};font-weight:600">${size(sizes[0])}</td>
@@ -294,19 +520,24 @@ function renderOverview() {
   if (m.rulesFile) alerts.push(`<li>Using ${num(m.customRules)} of your own rules from <span class="path">${esc(m.rulesFile)}</span>.</li>`);
 
   $("#overview").innerHTML = `
+    ${healthBanner()}
     <div class="cards">${cards}</div>
     <div class="panel"><p class="lead">${lead}</p>${bar(totals, 0, true)}${legend()}
       ${alerts.length ? `<ul class="alerts">${alerts.join("")}</ul>` : ""}
       <p class="note">${size(grand)} counted in total. Sizes are file sizes, so Windows hard links can make the system folders look bigger than the disk usage.</p></div>
     <div class="panel"><h2>Back-up checklist: where your irreplaceable files are</h2>
-      <div class="tw"><table><thead><tr><th>Folder</th><th>Why</th><th class="n">Back up</th><th class="n">Files</th><th class="hide-sm">All verdicts in this folder</th></tr></thead>
-      <tbody>${groupRows || `<tr><td colspan="5" class="dim">Nothing marked Back up.</td></tr>`}</tbody></table></div>
-      <p class="note">Each row is a folder where a rule starts, such as your Desktop or .ssh. Click a row to open it in Folders.</p></div>
+      ${groups.length ? `<div class="toolbar" style="margin:0 0 6px"><button class="lnk" data-selall="checklist">Select all ${num(groups.length)} folders for the backup script</button></div>` : ""}
+      <div class="tw"><table><thead><tr><th class="cb"></th><th>Folder</th><th>Why</th><th class="n">Back up</th><th class="n">Files</th><th class="hide-sm">All verdicts in this folder</th></tr></thead>
+      <tbody>${groupRows || `<tr><td colspan="6" class="dim">Nothing marked Back up.</td></tr>`}</tbody></table></div>
+      <p class="note">Each row is a folder where a rule starts, such as your Desktop or .ssh. Click a row to open it in Folders. Tick folders here, in Folders or in Files to build a backup script.</p></div>
     <div class="panel"><h2>By file type</h2>
       <div class="tw"><table><thead><tr><th>Type</th><th class="n">Size</th><th class="n">Files</th><th class="n">To back up</th><th class="hide-sm">Verdicts</th></tr></thead>
       <tbody>${catRows}</tbody></table></div></div>`;
 
   $("#overview").addEventListener("click", e => {
+    if (e.target.closest("input.sel")) return;
+    const all = e.target.closest("[data-selall]");
+    if (all) { groups.forEach(g => sel.add("d:" + g[0])); selChanged(); return; }
     const go = e.target.closest("[data-goto]");
     if (go) { show(go.dataset.goto); return; }
     const card = e.target.closest(".card");
@@ -334,6 +565,7 @@ function renderFolders() {
     crumbs += chain.map(i => ` <span class="dim">›</span> <a data-node="${i}">${esc(nodes[i].name)}</a>`).join("");
   }
   const rows = kids.map(n => `<tr class="click" data-node="${n.i}">
+      <td class="cb">${selBox("d:" + n.i)}</td>
       <td>📁 ${esc(n.name)}${n.reason >= 0 && (!cur || n.reason !== cur.reason) ? `<span class="tag">${esc(D.reasons[n.reason])}</span>` : ""}${n.err ? `<span class="tag">partly unreadable</span>` : ""}</td>
       <td class="barc">${barFor(n.sizes)}</td>
       <td class="n">${size(pick(n.sizes))}</td><td class="n">${num(n.count)}</td></tr>`);
@@ -341,10 +573,10 @@ function renderFolders() {
   if (cur) {
     const own = pick(cur.own);
     if (own > 0 || (ff.v < 0 && cur.ownCount > 0))
-      rows.push(`<tr><td class="dim">📄 Files directly in this folder</td><td class="barc">${barFor(cur.own)}</td><td class="n">${size(own)}</td><td class="n">${num(cur.ownCount)}</td></tr>`);
+      rows.push(`<tr><td class="cb"></td><td class="dim">📄 Files directly in this folder</td><td class="barc">${barFor(cur.own)}</td><td class="n">${size(own)}</td><td class="n">${num(cur.ownCount)}</td></tr>`);
     const rest = cur.sizes.map((s, v) => s - cur.own[v] - sum(cur.kids.map(k => nodes[k].sizes[v])));
     if (pick(rest) > 0)
-      rows.push(`<tr><td class="dim">Smaller folders, not listed one by one</td><td class="barc">${barFor(rest)}</td><td class="n">${size(pick(rest))}</td><td></td></tr>`);
+      rows.push(`<tr><td class="cb"></td><td class="dim">Smaller folders, not listed one by one</td><td class="barc">${barFor(rest)}</td><td class="n">${size(pick(rest))}</td><td></td></tr>`);
   }
 
   let fileHtml = "";
@@ -353,8 +585,8 @@ function renderFolders() {
     const shown = fl.slice(0, 300);
     const missing = cur.ownCount - cur.files.length;
     fileHtml = `<div class="panel"><h2>Files in this folder</h2>${shown.length ? `<div class="tw"><table>
-      <thead><tr><th>Name</th><th class="n">Size</th><th class="n hide-sm">Modified</th><th>Type</th><th>Verdict</th></tr></thead><tbody>
-      ${shown.map(f => `<tr><td class="path">${esc(f.name)}${flagTags(f.flags)}</td><td class="n">${size(f.size)}</td><td class="n hide-sm">${day(f.mtime)}</td>
+      <thead><tr><th class="cb"></th><th>Name</th><th class="n">Size</th><th class="n hide-sm">Modified</th><th>Type</th><th>Verdict</th></tr></thead><tbody>
+      ${shown.map(f => `<tr><td class="cb">${selBox("f:" + f.i)}</td><td class="path">${esc(f.name)}${flagTags(f.flags)}</td><td class="n">${size(f.size)}</td><td class="n hide-sm">${day(f.mtime)}</td>
         <td class="dim">${esc(D.categories[f.cat])}</td><td>${vtag(f.v)} <span class="dim">${esc(D.reasons[f.reason])}</span></td></tr>`).join("")}
       </tbody></table></div>` : `<p class="dim">No individual files listed for this folder.</p>`}
       ${missing > 0 ? `<p class="note">${num(missing)} smaller files here aren't included in this report. files.csv lists every file.</p>` : ""}</div>`;
@@ -363,14 +595,15 @@ function renderFolders() {
   $("#folders").innerHTML = `
     <div class="toolbar"><span class="dim">Show sizes for</span>
       <select id="fv"><option value="-1">All verdicts</option>${D.verdicts.map((n, v) => `<option value="${v}"${ff.v === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>
-      ${cur ? `<button class="lnk" data-copy="${esc(pathOf(cur.i))}">copy path</button>` : ""}</div>
+      ${cur ? `<button class="lnk" data-copy="${esc(pathOf(cur.i))}">copy path</button> <label class="dim">${selBox("d:" + cur.i)} back up this whole folder</label>` : ""}</div>
     <div class="crumbs">${crumbs}</div>
-    <div class="panel"><div class="tw"><table><thead><tr><th>Folder</th><th class="hide-sm"></th><th class="n">Size</th><th class="n">Files</th></tr></thead>
-      <tbody>${rows.join("") || `<tr><td colspan="4" class="dim">Nothing here for this verdict.</td></tr>`}</tbody></table></div>${legend()}</div>
+    <div class="panel"><div class="tw"><table><thead><tr><th class="cb"></th><th>Folder</th><th class="hide-sm"></th><th class="n">Size</th><th class="n">Files</th></tr></thead>
+      <tbody>${rows.join("") || `<tr><td colspan="5" class="dim">Nothing here for this verdict.</td></tr>`}</tbody></table></div>${legend()}</div>
     ${fileHtml}`;
   $("#fv").value = ff.v;
 }
 $("#folders").addEventListener("click", e => {
+  if (e.target.closest("input.sel, label")) return;
   const a = e.target.closest("[data-node]");
   if (a) { ff.node = +a.dataset.node; renderFolders(); window.scrollTo(0, 0); }
 });
@@ -433,8 +666,8 @@ function renderFiles() {
   const slice = idx.slice(fs.page * PAGE, fs.page * PAGE + PAGE);
   const totalSize = idx.reduce((s, i) => s + files[i].size, 0);
   $("#fcount").textContent = `${num(idx.length)} files · ${size(totalSize)}`;
-  $("#ftable").innerHTML = `<table><thead><tr><th>Name</th><th class="hide-sm">Folder</th><th class="n">Size</th><th class="n hide-sm">Modified</th><th>Verdict</th></tr></thead><tbody>
-    ${slice.map(i => { const f = files[i]; const dir = pathOf(f.node); return `<tr>
+  $("#ftable").innerHTML = `<table><thead><tr><th class="cb"></th><th>Name</th><th class="hide-sm">Folder</th><th class="n">Size</th><th class="n hide-sm">Modified</th><th>Verdict</th></tr></thead><tbody>
+    ${slice.map(i => { const f = files[i]; const dir = pathOf(f.node); return `<tr><td class="cb">${selBox("f:" + i)}</td>
       <td class="path">${esc(f.name)}${flagTags(f.flags)}<div class="dim" style="font-size:12px">${esc(D.categories[f.cat])}</div></td>
       <td class="path hide-sm"><a class="dim" style="cursor:pointer" data-folder="${f.node}">${esc(dir)}</a> <button class="lnk" data-copy="${esc(dir + sep + f.name)}">copy</button></td>
       <td class="n">${size(f.size)}</td><td class="n hide-sm">${day(f.mtime)}</td>
@@ -474,7 +707,7 @@ let dupeLimit = 100;
 function renderDupes() {
   const box = $("#dupes");
   if (!m.dupesChecked) {
-    box.innerHTML = `<div class="panel"><h2>Duplicates</h2><p class="dim">The duplicate check was turned off with -no-dupes.</p></div>`;
+    box.innerHTML = `<div class="panel"><h2>Duplicates</h2><p class="dim">The duplicate check didn't run. It reads every possible copy in full, so it only runs when you ask for it with <code>pcaudit -dupes</code>, and never on a drive that has logged errors.${m.safetyNote ? " " + esc(m.safetyNote) : ""}</p></div>`;
     return;
   }
   const list = dupes.slice(0, dupeLimit).map(d => `<div class="dupe">
@@ -501,12 +734,47 @@ $("#dupes").addEventListener("click", e => {
 });
 
 // ---------- problems ----------
+// ---------- drive health ----------
+const health = m.health || null;
+const sickDisks = health ? health.disks.filter(d => (d.events && d.events.length) || (d.health && d.health !== "Healthy")) : [];
+const diskName = d => `Disk ${d.number} (${esc(d.model)}${d.letters && d.letters.length ? ", " + esc(d.letters.join(" ")) : ""})`;
+const when = t => { const d = new Date(t); return isNaN(d) || d.getFullYear() < 2000 ? "" : d.toLocaleString(); };
+function healthBanner() {
+  if (!sickDisks.length && !m.diskErrors) return "";
+  const items = sickDisks.map(d => {
+    const n = (d.events || []).reduce((s, e) => s + e.count, 0);
+    const latest = (d.events || []).reduce((a, e) => e.latest > a ? e.latest : a, "");
+    return `<li><b>${diskName(d)}</b>${d.health && d.health !== "Healthy" ? `: Windows reports its health as <b>${esc(d.health)}</b>` : ""}${n ? `: ${num(n)} disk errors in the last 30 days (${(d.events || []).map(e => `${num(e.count)} × ${esc(e.what)}`).join(", ")}), latest ${esc(when(latest))}` : ""}.</li>`;
+  }).join("");
+  return `<div class="panel danger"><h2>⚠ A drive has problems</h2>
+    <ul class="alerts" style="margin-top:0">${items}${m.diskErrors ? `<li>During this scan the drive failed to read <b>${num(m.diskErrors)}</b> folders or files. <a data-goto="problems">See which ones</a>.</li>` : ""}</ul>
+    <p style="margin:10px 0 0">A drive with bad blocks can crash Windows when it's read heavily, and a crash can damage the boot files. <b>Copy what you can't lose to another drive first</b>, and plan to replace this one before you reset or reinstall.</p>
+    ${m.safetyNote ? `<p class="note">${esc(m.safetyNote)}</p>` : ""}</div>`;
+}
+
 function renderProblems() {
   const errs = D.errors || [];
-  const odd = errs.filter(e => !e[2]), expected = errs.filter(e => e[2]);
+  const odd = errs.filter(e => e[2] === 0), expected = errs.filter(e => e[2] === 1), diskFailed = errs.filter(e => e[2] === 2);
+  const disks = health ? health.disks : [];
+  const diskRows = disks.map(d => {
+    const n = (d.events || []).reduce((s, e) => s + e.count, 0);
+    const bad = n > 0 || (d.health && d.health !== "Healthy");
+    return `<tr><td>${diskName(d)}<div class="dim" style="font-size:12px">${esc([d.bus, d.media].filter(Boolean).join(" · "))}</div></td>
+      <td>${bad ? `<span class="vt" style="background:${vc(0)}">Problems</span>` : `<span class="vt" style="background:${vc(1)}">No errors logged</span>`}
+        <div class="dim" style="font-size:12px">Windows health: ${esc(d.health || "unknown")}</div></td>
+      <td class="dim">${(d.events || []).map(e => `${num(e.count)} × ${esc(e.what)}, latest ${esc(when(e.latest))}`).join("<br>") || "None"}</td></tr>`;
+  }).join("");
   const table = list => `<div class="tw"><table><thead><tr><th style="width:45%">Path</th><th>Error</th></tr></thead><tbody>
     ${list.map(([p, e]) => `<tr><td class="path">${esc(p)}</td><td class="dim path">${esc(e.replace("open " + p + ": ", ""))}</td></tr>`).join("")}</tbody></table></div>`;
   $("#problems").innerHTML = `
+    <div class="panel"><h2>Drives</h2>
+      ${disks.length ? `<div class="tw"><table><thead><tr><th>Drive</th><th>Status</th><th>Errors Windows logged in the last 30 days</th></tr></thead><tbody>${diskRows}</tbody></table></div>`
+        : `<p class="dim">${health && health.error ? "Couldn't check the drives: " + esc(health.error) : "Drive health isn't checked on this system yet."}</p>`}
+      ${health && health.other && health.other.length ? `<p class="note">Not tied to one drive: ${health.other.map(e => `${num(e.count)} × ${esc(e.what)}`).join(", ")}.</p>` : ""}
+      <p class="note">Windows often keeps calling a drive "Healthy" while its error log fills up, so pcaudit reads both. This scan used ${num(m.readers || 0)} reader${m.readers === 1 ? "" : "s"} at low priority.</p></div>
+    ${diskFailed.length ? `<div class="panel danger"><h2>The drive failed to read these (${num(diskFailed.length)})</h2>
+      <p class="note" style="margin:0 0 10px">These are on damaged parts of the drive. Their contents may already be lost or corrupt. If any of them matter, copy them off now, one at a time.</p>
+      ${table(diskFailed)}</div>` : ""}
     <div class="panel"><h2>Couldn't read: worth a look (${num(odd.length)})</h2>
       <p class="note" style="margin:0 0 10px">These places couldn't be read and aren't known system folders. Anything inside is missing from the totals. Running pcaudit as administrator usually gets in.</p>
       ${odd.length ? table(odd) : `<p class="dim">Nothing. Every folder outside protected system areas was readable.</p>`}</div>
@@ -530,7 +798,8 @@ function renderAbout() {
       <p class="note">Nothing was changed or uploaded. Apart from comparing possible duplicates, the tool only read folder listings and file details. The report contains your file names, so keep it private.</p></div>`;
 }
 
-renderOverview(); renderFolders(); renderFiles(); renderRepos(); renderDupes(); renderProblems(); renderAbout();
+renderOverview(); renderFolders(); renderFiles(); renderRepos(); renderDupes(); renderPrograms(); renderBackup(); renderProblems(); renderAbout();
+selChanged();
 </script>
 </body>
 </html>

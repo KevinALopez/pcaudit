@@ -6,6 +6,7 @@ package dupes
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"sort"
@@ -37,8 +38,31 @@ const edge = 64 << 10
 // and last 64 KB are compared; phase "full" counts bytes read in full.
 type Progress func(phase string, done, total int64)
 
-// Find returns groups of identical files, biggest waste first.
-func Find(cands []Candidate, workers int, progress Progress) []Group {
+// ErrDisk is returned when the drive failed a read. Find stops right away
+// then: reading a failing drive harder can crash the computer.
+type ErrDisk struct {
+	Path string
+	Err  error
+}
+
+func (e *ErrDisk) Error() string { return "the drive failed to read " + e.Path + ": " + e.Err.Error() }
+
+// Find returns groups of identical files, biggest waste first. isDiskErr
+// tells a failing drive apart from ordinary errors such as a locked file.
+func Find(cands []Candidate, workers int, progress Progress, isDiskErr func(error) bool) ([]Group, error) {
+	var stop atomic.Pointer[ErrDisk]
+	guard := func(hash func(Candidate) (string, error)) func(Candidate) (string, error) {
+		return func(c Candidate) (string, error) {
+			if stop.Load() != nil {
+				return "", errStopped
+			}
+			h, err := hash(c)
+			if err != nil && isDiskErr != nil && isDiskErr(err) {
+				stop.CompareAndSwap(nil, &ErrDisk{c.Path, err})
+			}
+			return h, err
+		}
+	}
 	if workers <= 0 {
 		workers = 4
 	}
@@ -61,7 +85,10 @@ func Find(cands []Candidate, workers int, progress Progress) []Group {
 		files += int64(len(g))
 	}
 	var done atomic.Int64
-	stage = refine(stage, workers, partialHash, func(Candidate) { progress("sample", done.Add(1), files) })
+	stage = refine(stage, workers, guard(partialHash), func(Candidate) { progress("sample", done.Add(1), files) })
+	if e := stop.Load(); e != nil {
+		return nil, e
+	}
 
 	// Files no bigger than the two sampled edges were already read whole.
 	var bytesTotal int64
@@ -71,16 +98,20 @@ func Find(cands []Candidate, workers int, progress Progress) []Group {
 		}
 	}
 	var bytesDone atomic.Int64
-	stage = refine(stage, workers, func(c Candidate) (string, error) {
+	stage = refine(stage, workers, guard(func(c Candidate) (string, error) {
 		if c.Size <= 2*edge {
 			return partialHash(c)
 		}
 		return fullHash(c)
-	}, func(c Candidate) {
+	}), func(c Candidate) {
 		if c.Size > 2*edge {
 			progress("full", bytesDone.Add(c.Size), bytesTotal)
 		}
 	})
+
+	if e := stop.Load(); e != nil {
+		return nil, e
+	}
 
 	out := make([]Group, 0, len(stage))
 	for _, g := range stage {
@@ -89,8 +120,10 @@ func Find(cands []Candidate, workers int, progress Progress) []Group {
 		out = append(out, Group{Size: g[0].Size, Hash: h[:16], Files: g})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Wasted() > out[j].Wasted() })
-	return out
+	return out, nil
 }
+
+var errStopped = errors.New("stopped after a disk error")
 
 // refine splits every group by a hash and keeps the subgroups that still
 // hold more than one file. Files that can't be read drop out.

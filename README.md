@@ -17,9 +17,24 @@ It writes an offline **report.html** with an overview, a back-up checklist, a fo
 It also checks two things that are easy to lose in a wipe:
 
 - **Git repositories:** for every repo it finds, git is asked about uncommitted changes, unpushed commits, stashes, and repos with no remote. Committed and pushed files count as already safe. Unpushed work counts as back up.
-- **Duplicates:** files of 1 MB or more that you'd back up or review are compared byte for byte. You'll see how much space extra copies take, and which folders are copies of each other.
+- **Duplicates** (with `-dupes`): files of 1 MB or more that you'd back up or review are compared byte for byte. You'll see how much space extra copies take, and which folders are copies of each other.
+
+And it helps with the reset itself:
+
+- **Installed programs:** a reinstall checklist (programs.csv), plus `winget-packages.json`. After the reset, `winget import -i winget-packages.json` reinstalls everything winget knows in one go, and the report lists what needs a manual reinstall.
+- **Backup script:** tick folders and files anywhere in the report, then download `pcaudit-backup.cmd`. It copies them to another drive with robocopy (built into Windows), keeps the folder structure, skips `node_modules` and caches if you want, writes a log, and resumes if you run it again. It only copies, never moves or deletes.
 
 pcaudit never changes, moves or uploads anything. Apart from the duplicate check, it only reads folder listings and file details. The report contains your file names, so keep it private.
+
+## Safe for failing drives
+
+A drive with bad blocks can crash Windows when it's read heavily (a blue screen, often `UNEXPECTED_STORE_EXCEPTION` 0x154), and the crash can damage the boot files. pcaudit learned this the hard way, so it now:
+
+- **Checks drive health first.** It reads Windows' own disk error log (bad blocks, paging errors, resets, file system corruption) for the last 30 days, plus each drive's health status. No administrator rights are needed. Windows often keeps calling a drive "Healthy" while that log fills up.
+- **Warns loudly** when a drive it's about to read has problems, and suggests backing up and replacing that drive.
+- **Reads gently.** It uses 4 readers on SSDs, 2 on hard drives and USB drives, and **1 on a drive with errors**, all at low background priority. On a drive with errors it skips the duplicate check, and asks before doing anything heavier.
+- **Backs off mid-scan.** If the drive fails a read during the scan, pcaudit drops to one reader, skips the duplicate check, and lists the files it couldn't read. Those files are sitting on damaged parts of the drive.
+- **Keeps the heavy part opt-in.** The duplicate check reads every possible copy in full, so it only runs with `-dupes`, or when you say yes after double-clicking.
 
 ## Use it
 
@@ -35,11 +50,15 @@ pcaudit never changes, moves or uploads anything. Apart from the duplicate check
 | Flag | What it does |
 |---|---|
 | `-out <folder>` | Where to write the report |
-| `-no-dupes` | Skip the duplicate check. It reads possible copies in full, which can take a few minutes. |
+| `-readers <n>` | How many folders or files to read at once. By default it's picked from your drives (usually 4). More than twice the recommendation triggers a warning and a question. |
+| `-dupes` | Also find duplicate files. This reads every possible copy in full and can take minutes. |
+| `-force` | Don't slow down or ask, even when a drive has logged errors. Not recommended. |
 | `-no-git` | Don't ask git about repositories |
+| `-no-programs` | Don't list installed programs |
+| `-no-winget` | Don't export the winget reinstall list (about 10 s) |
 | `-rules <file>` | Use your own rules (see below) |
 | `-print-rules` | Print the built-in rules |
-| `-no-csv`, `-no-open`, `-workers`, `-version` | |
+| `-no-csv`, `-no-open`, `-version` | |
 
 Windows SmartScreen may warn about an unsigned download. Choose **More info → Run anyway**.
 
@@ -91,5 +110,5 @@ git push origin v0.1.0
 
 - [x] v0.1: parallel scan, verdict rules, HTML report, CSV export
 - [x] v0.2: git repositories (uncommitted or unpushed work), duplicate files and folders, rules file you can edit
-- [ ] v0.3: installed programs and winget list, select files in the report and export a backup script
+- [x] v0.3: installed programs and winget list, select files in the report and export a backup script
 - [ ] v0.5: Android via `adb` (the `android/arm64` build already scans `/sdcard`)

@@ -3,9 +3,11 @@
 package scan
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"strings"
+	"syscall"
 
 	"github.com/KevinALopez/pcaudit/internal/classify"
 )
@@ -25,6 +27,11 @@ func attrsOf(fi fs.FileInfo) uint32 {
 }
 
 func allocatedSize(path string, attrs uint32, size int64) (int64, bool) { return size, false }
+
+func isDeviceError(err error) bool { return errors.Is(err, syscall.EIO) }
+
+// LowPriority is Windows-only for now.
+func LowPriority() {}
 
 // DefaultRoots returns the home folder on non-Windows systems. On Android
 // (later) this will be /sdcard.

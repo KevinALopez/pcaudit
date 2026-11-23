@@ -2,6 +2,7 @@ package dupes
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,7 +26,10 @@ func TestFind(t *testing.T) {
 		cands = append(cands, Candidate{Path: p, Size: int64(len(data)), Name: name})
 	}
 
-	groups := Find(cands, 2, nil)
+	groups, err := Find(cands, 2, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(groups) != 2 {
 		t.Fatalf("got %d groups, want 2: %+v", len(groups), groups)
 	}
@@ -43,5 +47,13 @@ func TestFind(t *testing.T) {
 	}
 	if w := groups[0].Wasted(); w != int64(len(big)) {
 		t.Errorf("wasted = %d, want %d", w, len(big))
+	}
+
+	// A drive error stops everything. Here a missing file stands in for one.
+	missing := append(cands, Candidate{Path: filepath.Join(dir, "gone.bin"), Size: int64(len(big)), Name: "gone.bin"})
+	groups, err = Find(missing, 2, nil, func(err error) bool { return os.IsNotExist(err) })
+	var de *ErrDisk
+	if !errors.As(err, &de) || groups != nil {
+		t.Errorf("expected a disk error and no groups, got %v, %d groups", err, len(groups))
 	}
 }

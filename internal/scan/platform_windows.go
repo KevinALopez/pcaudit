@@ -3,6 +3,7 @@
 package scan
 
 import (
+	"errors"
 	"io/fs"
 	"syscall"
 	"unsafe"
@@ -23,6 +24,33 @@ var (
 )
 
 const attrSparse = 0x200
+
+// Windows errors that mean the drive failed, not the permissions.
+var deviceErrnos = []syscall.Errno{
+	23,   // ERROR_CRC: data error (cyclic redundancy check), the usual bad-block error
+	483,  // ERROR_DEVICE_HARDWARE_ERROR
+	1117, // ERROR_IO_DEVICE
+	1392, // ERROR_FILE_CORRUPT
+	1393, // ERROR_DISK_CORRUPT
+	1167, // ERROR_DEVICE_NOT_CONNECTED
+}
+
+func isDeviceError(err error) bool {
+	for _, e := range deviceErrnos {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// LowPriority asks Windows to give this process background CPU and disk
+// priority, so the PC stays responsive and pcaudit yields to everything else.
+func LowPriority() {
+	const processModeBackgroundBegin = 0x00100000
+	proc, _ := syscall.GetCurrentProcess()
+	kernel32.NewProc("SetPriorityClass").Call(uintptr(proc), processModeBackgroundBegin)
+}
 
 // allocatedSize returns how much disk a sparse file really uses. Emulator
 // and VM disks are often sparse: a "512 GB" image may hold a few GB.
