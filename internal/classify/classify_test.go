@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,7 +44,10 @@ func TestVerdicts(t *testing.T) {
 		{`C:\Windows.old\Windows\System32\x.dll`, 0, Junk},
 	}
 	for _, tc := range cases {
-		dir, name := filepath.Split(tc.path)
+		// Split on "\" ourselves: filepath.Split only knows "\" on Windows,
+		// and these tests must pass on the Linux CI runners too.
+		i := strings.LastIndex(tc.path, `\`)
+		dir, name := tc.path[:i+1], tc.path[i+1:]
 		r := c.File(c.DirRule(dir), strings.ToLower(name), tc.attrs)
 		if r.V != tc.want {
 			t.Errorf("%s: got %s (%s), want %s", tc.path, VerdictNames[r.V], Reasons[r.Reason], VerdictNames[tc.want])
